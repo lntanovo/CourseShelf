@@ -9,20 +9,21 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Qt, QTimer, Signal
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QAction, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QComboBox, QFileDialog,
     QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QProgressBar,
+    QInputDialog, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QProgressBar,
     QPushButton, QScrollArea, QSizePolicy, QSplitter, QTableWidget, QTableWidgetItem,
-    QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QRadioButton, QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
-from organizer import (
-    CATEGORIES, build_plan, copy_unique, create_directories, extract_candidates,
-    load_settings, local_ocr, planned_copy_path, preview_paths, save_root,
-    save_settings,
-)
+from organizer import build_plan, extract_candidates, load_settings, local_ocr, planned_copy_path, save_root, save_settings
+from catalog import (add_category, count_contents, create_plan,
+                     disk_categories, import_course, is_managed, missing_paths, plan_paths,
+                     rename_category, restore_defaults, restore_missing, trash_category)
+from classifier import suggest
+from file_ops import Cancelled, PartialMoveError, transfer
 
 
 class OcrWorker(QThread):
@@ -42,22 +43,117 @@ class OcrWorker(QThread):
 
 class DropFileEdit(QLineEdit):
     file_dropped = Signal(str)
+    rejected = Signal(str)
 
     def __init__(self):
         super().__init__()
         self.setAcceptDrops(True)
 
     def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls() and len(event.mimeData().urls()) == 1:
-            event.acceptProposedAction()
+        if event.mimeData().hasUrls():
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
         else:
             event.ignore()
 
     def dropEvent(self, event):
-        url = event.mimeData().urls()[0]
-        if url.isLocalFile():
+        urls = event.mimeData().urls()
+        if len(urls) == 1 and urls[0].isLocalFile() and Path(urls[0].toLocalFile()).is_file():
+            url = urls[0]
             self.file_dropped.emit(url.toLocalFile())
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
+        else:
+            self.rejected.emit("一次只能拖入一个本地普通文件")
+            event.ignore()
+
+
+class ImageDropZone(QLabel):
+    image_dropped = Signal(str)
+    rejected = Signal(str)
+    clicked = Signal()
+
+    def __init__(self):
+        super().__init__("拖入一张 PNG / JPG 课表图片，或点击此处选择")
+        self.setAcceptDrops(True)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setMinimumHeight(154)
+        self.setObjectName("imagePreview")
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            self.setProperty("dragging", True)
+            self.style().unpolish(self)
+            self.style().polish(self)
             event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self.setProperty("dragging", False)
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def dropEvent(self, event):
+        self.dragLeaveEvent(event)
+        urls = event.mimeData().urls()
+        if len(urls) != 1 or not urls[0].isLocalFile():
+            self.rejected.emit("请只拖入一张本地 PNG / JPG 图片")
+            return
+        self.image_dropped.emit(urls[0].toLocalFile())
+        event.acceptProposedAction()
+
+    def mousePressEvent(self, event):
+        self.clicked.emit()
+        super().mousePressEvent(event)
+
+
+class FileDropTree(QTreeWidget):
+    file_on_item = Signal(str, str)
+    rejected = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        event.setDropAction(Qt.DropAction.CopyAction)
+        event.accept()
+
+    def dropEvent(self, event):
+        urls = event.mimeData().urls()
+        item = self.itemAt(event.position().toPoint())
+        if len(urls) == 1 and urls[0].isLocalFile() and Path(urls[0].toLocalFile()).is_file() and item is not None:
+            self.file_on_item.emit(urls[0].toLocalFile(), item.data(0, Qt.ItemDataRole.UserRole))
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
+        else:
+            self.rejected.emit("请将一个本地普通文件拖到课程或分类目录")
+
+
+class FileWorker(QThread):
+    progress = Signal(int)
+    completed = Signal(str)
+    failed = Signal(str)
+    def __init__(self, source: Path, destination: Path, root: Path, mode: str):
+        super().__init__()
+        self.source, self.destination, self.root, self.mode = source, destination, root, mode
+        self.cancel_requested = False
+
+    def run(self):
+        try:
+            target = transfer(self.source, self.destination, root=self.root, mode=self.mode,
+                              progress=self.progress.emit, cancelled=lambda: self.cancel_requested)
+            self.completed.emit(str(target))
+        except (OSError, ValueError, Cancelled, PartialMoveError) as exc:
+            self.failed.emit(str(exc))
 
 
 class MainWindow(QMainWindow):
@@ -68,12 +164,22 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1040, 680)
         self.image_path: Path | None = None
         self.worker: OcrWorker | None = None
+        self.file_worker: FileWorker | None = None
+        self._suggesting = False
         self.last_target: Path | None = None
         self.current_directory: Path | None = None
         self.tree_items: dict[Path, QTreeWidgetItem] = {}
 
         central = QWidget()
         self.setCentralWidget(central)
+        toolbar = self.addToolBar("常用操作")
+        toolbar.setMovable(False)
+        for label, callback in (("选择资料目录", self.choose_root), ("导入课表", self.choose_image),
+                                ("刷新磁盘", self.refresh_browser), ("打开资料目录", self.open_root),
+                                ("帮助 / 关于", self.show_about)):
+            action = QAction(label, self)
+            action.triggered.connect(callback)
+            toolbar.addAction(action)
         outer = QVBoxLayout(central)
         outer.setContentsMargins(20, 16, 20, 16)
         outer.setSpacing(14)
@@ -81,7 +187,7 @@ class MainWindow(QMainWindow):
         heading = QLabel("学习资料整理")
         heading.setObjectName("heading")
         outer.addWidget(heading)
-        description = QLabel("课表识别 → 核对课程 → 生成目录 → 复制资料。所有资料都保存在你选择的本机文件夹中。")
+        description = QLabel("识别课表 → 核对课程 → 生成目录 → 整理资料。所有资料都保存在你选择的本机文件夹中。")
         description.setObjectName("subtitle")
         outer.addWidget(description)
         outer.addWidget(self._make_root_card())
@@ -99,6 +205,7 @@ class MainWindow(QMainWindow):
         horizontal.addWidget(self._make_browser())
         horizontal.setSizes([590, 710])
         self.setStyleSheet(STYLE)
+        self.statusBar().showMessage("请选择资料总目录，或导入课表开始")
 
         settings = load_settings()
         remembered = settings.get("root")
@@ -107,6 +214,7 @@ class MainWindow(QMainWindow):
                 self.root_edit.setText(remembered)
                 self.root_changed(save=False, preferred=settings.get("last_viewed"))
             else:
+                self.root_edit.setText(remembered)
                 self.root_status.setText("上次使用的资料目录已失效，请选择现有文件夹：" + remembered)
                 QTimer.singleShot(0, lambda: QMessageBox.warning(
                     self, "资料目录不可用", "上次使用的资料目录已不存在，请重新选择现有文件夹。\n" + remembered))
@@ -162,6 +270,7 @@ class MainWindow(QMainWindow):
         self.root_edit.setObjectName("rootPath")
         self.root_edit.setPlaceholderText("请选择已有的本机文件夹；也可粘贴完整路径并按 Enter")
         self.root_edit.editingFinished.connect(self.root_changed)
+        self.root_edit.textChanged.connect(self.invalidate_preview)
         layout.addWidget(self.root_edit)
         self.root_status = QLabel()
         self.root_status.setObjectName("muted")
@@ -181,10 +290,9 @@ class MainWindow(QMainWindow):
         self.image_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.image_label.setWordWrap(True)
         image_layout.addWidget(self.image_label)
-        self.thumbnail = QLabel("支持 PNG / JPG / JPEG")
-        self.thumbnail.setObjectName("imagePreview")
-        self.thumbnail.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.thumbnail.setMinimumHeight(154)
+        self.thumbnail = ImageDropZone()
+        self.thumbnail.clicked.connect(self.choose_image)
+        self.thumbnail.image_dropped.connect(lambda raw: self.set_image(Path(raw)))
         image_layout.addWidget(self.thumbnail)
         row = QHBoxLayout()
         row.addWidget(self._button("选择课表图片", self.choose_image))
@@ -198,6 +306,7 @@ class MainWindow(QMainWindow):
         self.ocr_progress.setVisible(False)
         image_layout.addWidget(self.ocr_progress)
         self.ocr_status = QLabel("OCR 尚未运行")
+        self.thumbnail.rejected.connect(self.ocr_status.setText)
         self.ocr_status.setWordWrap(True)
         image_layout.addWidget(self.ocr_status)
         layout.addWidget(image_card)
@@ -209,6 +318,7 @@ class MainWindow(QMainWindow):
         self.courses_list = QListWidget()
         self.courses_list.setMinimumHeight(190)
         self.courses_list.itemChanged.connect(self.refresh_course_hint)
+        self.courses_list.itemChanged.connect(self.invalidate_preview)
         course_layout.addWidget(self.courses_list)
         row = QHBoxLayout()
         self.new_course = QLineEdit()
@@ -232,13 +342,14 @@ class MainWindow(QMainWindow):
 
     def _make_generate_tab(self) -> QWidget:
         scroll, layout = self._scroll_content()
-        note = QLabel("目录会直接建立在窗口顶部显示的资料总目录中。每门课程固定包含四个分类。")
+        note = QLabel("预览只读；确认后才建立目录。每门课程可独立管理分类。")
         note.setWordWrap(True)
         layout.addWidget(note)
         card, card_layout = self._card("设置学期并预览")
         card_layout.addWidget(QLabel("学期名称"))
         self.semester_edit = QLineEdit()
         self.semester_edit.setPlaceholderText("例如 2026秋季学期")
+        self.semester_edit.textChanged.connect(self.invalidate_preview)
         card_layout.addWidget(self.semester_edit)
         row = QHBoxLayout()
         row.addWidget(self._button("预览将创建的目录", self.show_preview))
@@ -253,16 +364,35 @@ class MainWindow(QMainWindow):
         self.generate_status.setWordWrap(True)
         card_layout.addWidget(self.generate_status)
         layout.addWidget(card)
+        manage, manage_layout = self._card("管理当前课程分类")
+        manage_layout.addWidget(QLabel("选择右侧目录树中的课程或分类，也可使用第 ③ 步的课程下拉框。"))
+        self.manage_path = QLabel("尚未选择课程")
+        self.manage_path.setWordWrap(True)
+        manage_layout.addWidget(self.manage_path)
+        self.manage_categories = QListWidget()
+        self.manage_categories.setMinimumHeight(110)
+        manage_layout.addWidget(self.manage_categories)
+        buttons = QHBoxLayout()
+        for label, method in (("添加分类", self.add_category_ui), ("重命名分类", self.rename_category_ui),
+                              ("移至回收站", self.delete_category_ui)):
+            buttons.addWidget(self._button(label, method))
+        manage_layout.addLayout(buttons)
+        buttons = QHBoxLayout()
+        for label, method in (("恢复默认分类", self.restore_defaults_ui), ("纳入管理", self.import_course_ui)):
+            buttons.addWidget(self._button(label, method))
+        buttons.addStretch()
+        manage_layout.addLayout(buttons)
+        layout.addWidget(manage)
         row = QHBoxLayout()
         row.addStretch()
-        row.addWidget(self._button("下一步：整理资料  →", lambda: self.tabs.setCurrentIndex(2), True))
+        row.addWidget(self._button("下一步：整理资料  →", self.advance_to_archive, True))
         layout.addLayout(row)
         layout.addStretch()
         return scroll
 
     def _make_archive_tab(self) -> QWidget:
         scroll, layout = self._scroll_content()
-        note = QLabel("选择一个文件和磁盘上已有的课程分类。只复制，不移动或覆盖源文件。")
+        note = QLabel("拖入或选择一个文件；确认课程、分类及路径后，再选择复制或移动。默认复制，不覆盖同名文件。")
         note.setWordWrap(True)
         layout.addWidget(note)
         card, card_layout = self._card("选择来源文件")
@@ -270,7 +400,7 @@ class MainWindow(QMainWindow):
         self.source_edit = DropFileEdit()
         self.source_edit.setPlaceholderText("选择或拖入一个本地文件")
         self.source_edit.file_dropped.connect(self.source_edit.setText)
-        self.source_edit.textChanged.connect(self.update_destination)
+        self.source_edit.textChanged.connect(self.suggest_target)
         row.addWidget(self.source_edit, 1)
         row.addWidget(self._button("浏览文件", self.choose_file))
         card_layout.addLayout(row)
@@ -295,15 +425,17 @@ class MainWindow(QMainWindow):
         course_column.addWidget(QLabel("课程"))
         self.course_combo = QComboBox()
         self.course_combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        self.course_combo.currentIndexChanged.connect(self.update_destination)
+        self.course_combo.currentIndexChanged.connect(self.refresh_categories)
         course_column.addWidget(self.course_combo)
         row.addLayout(course_column, 1)
         card_layout.addLayout(row)
         card_layout.addWidget(QLabel("分类"))
         self.category_combo = QComboBox()
-        self.category_combo.addItems(CATEGORIES)
         self.category_combo.currentIndexChanged.connect(self.update_destination)
         card_layout.addWidget(self.category_combo)
+        self.suggestion_label = QLabel("文件名建议：选择来源文件后显示；最终以手动选择为准。")
+        self.suggestion_label.setWordWrap(True)
+        card_layout.addWidget(self.suggestion_label)
         self.archive_choice_status = QLabel("请先选择资料总目录并生成课程分类。")
         self.archive_choice_status.setWordWrap(True)
         card_layout.addWidget(self.archive_choice_status)
@@ -314,12 +446,28 @@ class MainWindow(QMainWindow):
         self.destination_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         card_layout.addWidget(self.destination_label)
         row = QHBoxLayout()
+        self.copy_radio = QRadioButton("复制（默认，保留来源）")
+        self.copy_radio.setChecked(True)
+        self.move_radio = QRadioButton("移动（校验后删除来源）")
+        row.addWidget(self.copy_radio)
+        row.addWidget(self.move_radio)
+        card_layout.addLayout(row)
+        self.copy_radio.toggled.connect(self.update_destination)
+        self.move_radio.toggled.connect(self.update_destination)
+        row = QHBoxLayout()
         self.copy_button = self._button("确认复制到此位置", self.archive_file, True)
         row.addWidget(self.copy_button)
+        self.cancel_file_button = self._button("取消操作", self.cancel_file)
+        self.cancel_file_button.setEnabled(False)
+        row.addWidget(self.cancel_file_button)
         row.addWidget(self._button("打开目标文件夹", self.open_destination))
         row.addStretch()
         card_layout.addLayout(row)
+        self.file_progress = QProgressBar()
+        self.file_progress.setVisible(False)
+        card_layout.addWidget(self.file_progress)
         self.archive_status = QLabel("复制成功后，右侧文件列表会立即显示结果。")
+        self.source_edit.rejected.connect(self.archive_status.setText)
         self.archive_status.setWordWrap(True)
         card_layout.addWidget(self.archive_status)
         layout.addWidget(card)
@@ -338,6 +486,16 @@ class MainWindow(QMainWindow):
         row.addWidget(self._button("刷新", self.refresh_browser))
         row.addWidget(self._button("打开此目录", self.open_current_folder))
         layout.addLayout(row)
+        self.missing_label = QLabel("")
+        self.missing_label.setObjectName("warning")
+        self.missing_label.setWordWrap(True)
+        layout.addWidget(self.missing_label)
+        missing_row = QHBoxLayout()
+        self.missing_combo = QComboBox()
+        self.missing_combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        missing_row.addWidget(self.missing_combo, 1)
+        missing_row.addWidget(self._button("重建选中空目录", self.restore_missing_ui))
+        layout.addLayout(missing_row)
         panes = QSplitter(Qt.Orientation.Vertical)
         panes.setChildrenCollapsible(False)
         layout.addWidget(panes, 1)
@@ -346,9 +504,11 @@ class MainWindow(QMainWindow):
         tree_layout = QVBoxLayout(tree_box)
         tree_layout.setContentsMargins(0, 0, 0, 0)
         tree_layout.addWidget(QLabel("文件夹 · 学期 → 课程 → 分类"))
-        self.folder_tree = QTreeWidget()
+        self.folder_tree = FileDropTree()
         self.folder_tree.setHeaderHidden(True)
         self.folder_tree.currentItemChanged.connect(self.on_tree_selected)
+        self.folder_tree.file_on_item.connect(self.file_dropped_on_tree)
+        self.folder_tree.rejected.connect(self.statusBar().showMessage)
         tree_layout.addWidget(self.folder_tree)
         panes.addWidget(tree_box)
 
@@ -395,6 +555,8 @@ class MainWindow(QMainWindow):
             self.folder_tree.clear()
             self.tree_items.clear()
             self.refresh_targets()
+            self.missing_label.setText("资料总目录失效；请重新选择。不会自动创建目录。")
+            self.missing_combo.clear()
             return
         root = root.resolve()
         if self.root_edit.text() != str(root):
@@ -404,9 +566,13 @@ class MainWindow(QMainWindow):
                 save_root(root)
             except OSError as exc:
                 self.root_status.setText("目录可用，但设置保存失败：" + str(exc))
-        self.root_status.setText("资料直接保存在此文件夹及其子目录中。")
+        self.root_edit.setToolTip(str(root))
+        self.root_status.setText("资料直接保存在：" + str(root))
         self.refresh_targets()
         self.refresh_browser(preferred=preferred or str(root), remember=save)
+
+    def show_about(self):
+        QMessageBox.information(self, "关于 CourseShelf", "完全本地的课表识别和课程资料整理工具。\n默认复制资料；移动和删除都需要明确选择。\n资料保存在窗口顶部显示的资料总目录。")
 
     def open_root(self):
         root = self.root_path()
@@ -429,6 +595,11 @@ class MainWindow(QMainWindow):
         chosen = candidate if valid else root
         self.show_files(chosen, remember=remember)
         self._select_tree_path(chosen)
+        if not valid and candidate != root:
+            self.browser_path_label.setText("上次查看的目录已失效，已返回资料总目录：" + str(root))
+        self.refresh_missing()
+        self.refresh_targets()
+        self.refresh_manage_categories()
 
     def _load_tree(self, root: Path):
         self.folder_tree.blockSignals(True)
@@ -439,7 +610,7 @@ class MainWindow(QMainWindow):
             if depth > 2:
                 return
             try:
-                children = sorted((p for p in parent_path.iterdir() if p.is_dir()), key=lambda p: p.name.casefold())
+                children = sorted((p for p in parent_path.iterdir() if p.is_dir() and not p.is_symlink()), key=lambda p: p.name.casefold())
             except OSError as exc:
                 self.browser_path_label.setText("目录树读取失败：" + str(exc))
                 return
@@ -472,15 +643,16 @@ class MainWindow(QMainWindow):
     def on_tree_selected(self, current, _previous):
         if current is not None:
             self.show_files(Path(current.data(0, Qt.ItemDataRole.UserRole)))
+            self.refresh_manage_categories()
 
     def show_files(self, directory: Path, *, remember: bool = True):
         root = self.root_path()
         if root is None:
             return
         try:
-            if not directory.is_dir() or not directory.resolve().is_relative_to(root.resolve()):
+            if directory.is_symlink() or not directory.is_dir() or not directory.resolve().is_relative_to(root.resolve()):
                 raise ValueError("所选目录已失效或不在资料总目录内")
-            files = sorted((p for p in directory.iterdir() if p.is_file()), key=lambda p: p.name.casefold())
+            files = sorted((p for p in directory.iterdir() if p.is_file() and not p.is_symlink()), key=lambda p: p.name.casefold())
         except (OSError, ValueError) as exc:
             self.browser_path_label.setText("目录读取失败：" + str(exc))
             self.files_table.setRowCount(0)
@@ -527,22 +699,30 @@ class MainWindow(QMainWindow):
             self.set_image(Path(selected))
 
     def set_image(self, path: Path):
-        self.image_path = path
-        self.image_label.setText(str(path))
+        if not path.is_file() or path.suffix.casefold() not in {".png", ".jpg", ".jpeg"}:
+            self.ocr_status.setText("只接受一张存在的 PNG / JPG / JPEG 图片；原图片和课程保留。")
+            return False
         pixmap = QPixmap(str(path))
         if pixmap.isNull():
-            self.thumbnail.setText("图片无法预览，请检查文件格式")
-            self.ocr_status.setText("图片读取失败")
-            self.ocr_button.setEnabled(False)
-        else:
-            self.thumbnail.setPixmap(pixmap.scaled(560, 150, Qt.AspectRatioMode.KeepAspectRatio,
-                                                   Qt.TransformationMode.SmoothTransformation))
-            self.ocr_status.setText("图片已选择，点击“开始本地识别”。")
-            self.ocr_button.setEnabled(True)
+            self.ocr_status.setText("图片无法解码；原图片和课程保留。")
+            return False
+        if self.image_path != path and self.courses_list.count() and QMessageBox.question(
+                self, "替换课表图片", "已有课程列表。换图后原列表仍保留，开始重新识别时会清空。继续换图？") != QMessageBox.StandardButton.Yes:
+            return False
+        self.image_path = path
+        self.image_label.setText(str(path))
+        self.thumbnail.setPixmap(pixmap.scaled(560, 150, Qt.AspectRatioMode.KeepAspectRatio,
+                                               Qt.TransformationMode.SmoothTransformation))
+        self.ocr_status.setText("图片已选择，点击“开始本地识别”。")
+        self.ocr_button.setEnabled(True)
+        return True
 
     def start_ocr(self):
         if not self.image_path or not self.image_path.is_file():
             self.ocr_status.setText("请先选择存在的课表图片。")
+            return
+        if self.courses_list.count() and QMessageBox.question(
+                self, "重新识别", "重新识别将替换已核对或手工修改的课程列表，继续？") != QMessageBox.StandardButton.Yes:
             return
         self.ocr_button.setEnabled(False)
         self.ocr_progress.setRange(0, 0)
@@ -576,6 +756,7 @@ class MainWindow(QMainWindow):
         item = QListWidgetItem(name)
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
         self.courses_list.addItem(item)
+        self.invalidate_preview()
 
     def refresh_course_hint(self, *_):
         count = len([name for name in self.course_names() if name.strip()])
@@ -599,6 +780,12 @@ class MainWindow(QMainWindow):
         if row >= 0:
             self.courses_list.takeItem(row)
             self.refresh_course_hint()
+            self.invalidate_preview()
+
+    def invalidate_preview(self, *_):
+        if hasattr(self, "preview"):
+            self.preview.clear()
+            self.generate_status.setText("输入已变化，请重新预览当前目录计划。")
 
     def course_names(self) -> list[str]:
         return [self.courses_list.item(i).text() for i in range(self.courses_list.count())]
@@ -615,11 +802,11 @@ class MainWindow(QMainWindow):
             root = self.root_path()
             if root is None:
                 raise ValueError("请先选择现有的资料总目录")
-            paths = preview_paths(root, self.semester_edit.text(), self.course_names())
-            self.preview.addItems([f"{'已存在' if path.is_dir() else '待创建'}  ·  {path}" for path in paths])
+            _, _, paths = plan_paths(root, self.semester_edit.text(), self.course_names())
+            self.preview.addItems([f"{'已存在' if path.is_dir() and not path.is_symlink() else '待创建'}  ·  {path}" for path in paths])
             self.generate_status.setText(f"预览 {len(paths)} 个目录。已有目录会复用，不会覆盖其中的文件。")
             return True
-        except ValueError as exc:
+        except (OSError, ValueError) as exc:
             self.generate_status.setText("无法预览：" + str(exc))
             return False
 
@@ -629,21 +816,45 @@ class MainWindow(QMainWindow):
         try:
             root = self.root_path()
             semester_path, _ = self.plan()
-            created, existing, failures = create_directories(root, self.semester_edit.text(), self.course_names())
+            created, existing, failures, _ = create_plan(root, self.semester_edit.text(), self.course_names())
             message = f"创建 {created}，已存在 {existing}，失败 {len(failures)}"
             if failures:
                 message += "\n" + "\n".join(failures)
             self.generate_status.setText(message)
             self.refresh_targets(preferred=semester_path.name)
             self.refresh_browser(preferred=str(semester_path))
+            return not failures
         except (OSError, ValueError) as exc:
             self.generate_status.setText("生成失败：" + str(exc))
+            return False
+
+    def advance_to_archive(self):
+        if not self.show_preview():
+            return
+        root = self.root_path()
+        _, _, paths = plan_paths(root, self.semester_edit.text(), self.course_names())
+        blocked = [p for p in paths if p.is_symlink() or (p.exists() and not p.is_dir())]
+        if blocked:
+            self.generate_status.setText("目录被同名文件或链接阻挡：" + str(blocked[0]))
+            return
+        pending = [p for p in paths if not p.is_dir()]
+        if pending:
+            box = QMessageBox(self)
+            box.setWindowTitle("确认创建目录")
+            box.setText(f"资料总目录：{root}\n学期：{self.semester_edit.text()}\n待建目录：{len(pending)} 个")
+            create = box.addButton("创建并继续", QMessageBox.ButtonRole.AcceptRole)
+            box.addButton("返回检查", QMessageBox.ButtonRole.RejectRole)
+            box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            if box.clickedButton() != create or not self.generate():
+                return
+        self.tabs.setCurrentIndex(2)
 
     def refresh_targets(self, *_args, preferred: str | None = None):
         root = self.root_path()
         selected = preferred or self.archive_semester_combo.currentText()
         try:
-            semesters = sorted((p for p in root.iterdir() if p.is_dir()), key=lambda p: p.name.casefold()) if root else []
+            semesters = sorted((p for p in root.iterdir() if p.is_dir() and not p.is_symlink()), key=lambda p: p.name.casefold()) if root else []
         except OSError as exc:
             semesters = []
             self.archive_choice_status.setText("学期目录读取失败：" + str(exc))
@@ -666,7 +877,7 @@ class MainWindow(QMainWindow):
         semester_data = self.archive_semester_combo.currentData()
         semester_path = Path(semester_data) if semester_data else None
         try:
-            courses = sorted((p for p in semester_path.iterdir() if p.is_dir()), key=lambda p: p.name.casefold()) if semester_path and semester_path.is_dir() else []
+            courses = sorted((p for p in semester_path.iterdir() if p.is_dir() and not p.is_symlink()), key=lambda p: p.name.casefold()) if semester_path and semester_path.is_dir() else []
         except OSError as exc:
             courses = []
             self.archive_choice_status.setText("课程目录读取失败：" + str(exc))
@@ -688,7 +899,25 @@ class MainWindow(QMainWindow):
             self.archive_choice_status.setText("该学期下暂无课程文件夹。请先生成目录或更换学期。")
         else:
             self.archive_choice_status.setText(f"已找到 {len(courses)} 门磁盘上的课程，可选择分类复制资料。")
+        self.refresh_categories()
+
+    def refresh_categories(self, *_):
+        selected = self.category_combo.currentText()
+        course_data = self.course_combo.currentData()
+        try:
+            categories = sorted((p.name for p in Path(course_data).iterdir() if p.is_dir() and not p.is_symlink()), key=str.casefold) if course_data else []
+        except OSError:
+            categories = []
+        self.category_combo.blockSignals(True)
+        self.category_combo.clear()
+        self.category_combo.addItems(categories)
+        self.category_combo.setEnabled(bool(categories))
+        index = self.category_combo.findText(selected)
+        if index >= 0:
+            self.category_combo.setCurrentIndex(index)
+        self.category_combo.blockSignals(False)
         self.update_destination()
+        self.refresh_manage_categories()
 
     def target_directory(self) -> Path | None:
         root = self.root_path()
@@ -696,13 +925,16 @@ class MainWindow(QMainWindow):
         category = self.category_combo.currentText()
         if root and course_data and category:
             course_path = Path(course_data)
-            if course_path.is_dir() and course_path.resolve().is_relative_to(root.resolve()):
-                return course_path / category
+            target = course_path / category
+            if (not course_path.is_symlink() and course_path.is_dir() and not target.is_symlink()
+                    and target.is_dir() and target.resolve().is_relative_to(root.resolve())):
+                return target
         return None
 
     def update_destination(self, *_):
         source_text = self.source_edit.text().strip()
         self.source_label.setText("来源文件：" + source_text if source_text else "来源文件：尚未选择")
+        self.copy_button.setText("确认移动到此位置" if self.move_radio.isChecked() else "确认复制到此位置")
         destination_dir = self.target_directory()
         if destination_dir is None:
             self.destination_label.setText("最终目标文件：请先选择资料目录并生成课程分类")
@@ -710,8 +942,7 @@ class MainWindow(QMainWindow):
             self.destination_label.setText("目标文件夹：" + str(destination_dir) + "\n请选择来源文件以预览最终文件名。")
         else:
             proposed = planned_copy_path(Path(source_text), destination_dir)
-            suffix = "" if destination_dir.is_dir() else "\n目标分类尚未创建，请先生成目录。"
-            self.destination_label.setText("最终目标文件：" + str(proposed) + suffix)
+            self.destination_label.setText("最终目标文件：" + str(proposed))
 
     def choose_file(self):
         selected, _ = QFileDialog.getOpenFileName(self, "选择待复制的文件")
@@ -725,13 +956,203 @@ class MainWindow(QMainWindow):
                 raise ValueError("请先选择来源文件")
             if destination is None:
                 raise ValueError("请先选择资料目录、学期、课程和分类")
-            copied = copy_unique(Path(self.source_edit.text()), destination)
-            self.last_target = destination
-            self.archive_status.setText("复制成功，来源文件保持不变：" + str(copied))
-            self.refresh_browser(preferred=str(destination))
-            self.update_destination()
+            if self.file_worker is not None and self.file_worker.isRunning():
+                return
+            mode = "move" if self.move_radio.isChecked() else "copy"
+            self.copy_button.setEnabled(False)
+            self.cancel_file_button.setEnabled(True)
+            self.file_progress.setValue(0)
+            self.file_progress.setVisible(True)
+            self.archive_status.setText(("正在移动" if mode == "move" else "正在复制") + "，请稍候…")
+            self.file_worker = FileWorker(Path(self.source_edit.text()), destination, self.root_path(), mode)
+            self.file_worker.progress.connect(self.file_progress.setValue)
+            self.file_worker.completed.connect(self.file_finished)
+            self.file_worker.failed.connect(self.file_failed)
+            self.file_worker.finished.connect(self.file_stopped)
+            self.file_worker.start()
         except (OSError, ValueError) as exc:
             self.archive_status.setText("复制失败：" + str(exc))
+
+    def file_finished(self, target: str):
+        path = Path(target)
+        self.last_target = path.parent
+        mode = self.file_worker.mode
+        self.archive_status.setText(("移动成功：" if mode == "move" else "复制成功，来源文件保持不变：") + target)
+        self.refresh_browser(preferred=str(path.parent))
+        self.update_destination()
+
+    def file_failed(self, error: str):
+        self.archive_status.setText("文件操作失败：" + error)
+        self.refresh_browser()
+
+    def file_stopped(self):
+        self.copy_button.setEnabled(True)
+        self.cancel_file_button.setEnabled(False)
+        self.file_progress.setVisible(False)
+
+    def cancel_file(self):
+        if self.file_worker is not None:
+            self.file_worker.cancel_requested = True
+
+    def suggest_target(self, *_):
+        if self._suggesting:
+            return
+        source = Path(self.source_edit.text().strip())
+        if not source.is_file():
+            self.suggestion_label.setText("文件名建议：请选择存在的普通文件。")
+            self.update_destination()
+            return
+        self._suggesting = True
+        try:
+            courses = [self.course_combo.itemText(i) for i in range(self.course_combo.count()) if self.course_combo.itemData(i)]
+            result = suggest(source.name, courses)
+            if result.course:
+                self.course_combo.setCurrentText(result.course)
+            else:
+                self.course_combo.setCurrentIndex(-1)
+            categories = [self.category_combo.itemText(i) for i in range(self.category_combo.count())]
+            result = suggest(source.name, courses, categories)
+            if result.category:
+                self.category_combo.setCurrentText(result.category)
+            self.suggestion_label.setText("文件名建议：" + result.reason + "。可手动修改目标。")
+        finally:
+            self._suggesting = False
+            self.update_destination()
+
+    def file_dropped_on_tree(self, source: str, raw_target: str):
+        root = self.root_path()
+        target = Path(raw_target)
+        if root is None or not target.is_dir() or not target.resolve().is_relative_to(root.resolve()):
+            self.archive_status.setText("目标目录无效；未操作文件。")
+            return
+        relative = target.relative_to(root)
+        if len(relative.parts) < 2:
+            self.archive_status.setText("请拖到课程或分类目录；未操作文件。")
+            return
+        self.tabs.setCurrentIndex(2)
+        self.archive_semester_combo.setCurrentText(relative.parts[0])
+        self.course_combo.setCurrentText(relative.parts[1])
+        self.source_edit.setText(source)
+        if len(relative.parts) >= 3:
+            self.category_combo.setCurrentText(relative.parts[2])
+        self.suggestion_label.setText("目标来自拖放位置；请确认后再复制或移动。")
+
+    def _managed_course(self) -> tuple[Path, str, str] | None:
+        root = self.root_path()
+        if root is None:
+            return None
+        current = self.folder_tree.currentItem()
+        if current is not None:
+            path = Path(current.data(0, Qt.ItemDataRole.UserRole))
+            if path.is_dir() and path.resolve().is_relative_to(root.resolve()):
+                relative = path.relative_to(root)
+                if len(relative.parts) >= 2:
+                    return root, relative.parts[0], relative.parts[1]
+        course_data = self.course_combo.currentData()
+        if course_data:
+            path = Path(course_data)
+            return root, path.parent.name, path.name
+        return None
+
+    def refresh_manage_categories(self):
+        self.manage_categories.clear()
+        choice = self._managed_course()
+        if choice is None:
+            self.manage_path.setText("尚未选择课程")
+            return
+        root, semester, course = choice
+        path = root / semester / course
+        try:
+            managed = is_managed(root, semester, course)
+            names = disk_categories(root, semester, course)
+            self.manage_path.setText(f"{path}\n" + ("已纳入管理" if managed else "现有目录尚未纳入管理"))
+            self.manage_categories.addItems(names)
+        except (OSError, ValueError) as exc:
+            self.manage_path.setText("课程目录不可用：" + str(exc))
+
+    def _category_action(self, operation):
+        choice = self._managed_course()
+        if choice is None:
+            QMessageBox.warning(self, "请选择课程", "请先在目录树或课程下拉框中选择课程。")
+            return
+        try:
+            operation(*choice)
+            self.invalidate_preview()
+            self.refresh_browser()
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "分类操作失败", str(exc))
+
+    def import_course_ui(self):
+        def action(root, semester, course):
+            path = root / semester / course
+            names = disk_categories(root, semester, course)
+            preview = "\n".join("  • " + str(path / name) for name in names) or "  （当前没有分类子目录）"
+            if QMessageBox.question(self, "纳入管理", f"登记现有课程及以下分类？\n{path}\n{preview}\n不会修改已有文件。") == QMessageBox.StandardButton.Yes:
+                import_course(root, semester, course)
+        self._category_action(action)
+
+    def add_category_ui(self):
+        def action(root, semester, course):
+            name, ok = QInputDialog.getText(self, "添加分类", "分类名称")
+            if ok and name.strip() and QMessageBox.question(self, "确认创建", "创建目录：\n" + str(root / semester / course / name.strip())) == QMessageBox.StandardButton.Yes:
+                add_category(root, semester, course, name)
+        self._category_action(action)
+
+    def rename_category_ui(self):
+        def action(root, semester, course):
+            old = self.manage_categories.currentItem()
+            if old is None:
+                raise ValueError("请先选择一个分类")
+            name, ok = QInputDialog.getText(self, "重命名分类", "新名称", text=old.text())
+            if ok and name.strip() and QMessageBox.question(self, "确认重命名", f"{root / semester / course / old.text()}\n→ {root / semester / course / name.strip()}") == QMessageBox.StandardButton.Yes:
+                rename_category(root, semester, course, old.text(), name)
+        self._category_action(action)
+
+    def delete_category_ui(self):
+        def action(root, semester, course):
+            item = self.manage_categories.currentItem()
+            if item is None:
+                raise ValueError("请先选择一个分类")
+            path = root / semester / course / item.text()
+            files, dirs = count_contents(path)
+            if QMessageBox.question(self, "移至回收站", f"将整个分类目录移至 Windows 回收站？\n{path}\n包含 {files} 个文件、{dirs} 个子目录。") == QMessageBox.StandardButton.Yes:
+                trash_category(root, semester, course, item.text())
+        self._category_action(action)
+
+    def restore_defaults_ui(self):
+        def action(root, semester, course):
+            if QMessageBox.question(self, "恢复默认分类", f"在 {root / semester / course} 下补建缺失的默认分类？") == QMessageBox.StandardButton.Yes:
+                restore_defaults(root, semester, course)
+        self._category_action(action)
+
+    def refresh_missing(self):
+        root = self.root_path()
+        self.missing_combo.clear()
+        if root is None:
+            return
+        try:
+            missing = missing_paths(root)
+        except (OSError, ValueError) as exc:
+            self.missing_label.setText("管理记录不可读取；仍可浏览磁盘文件：" + str(exc))
+            return
+        for path in missing:
+            self.missing_combo.addItem(str(path), str(path))
+        self.missing_label.setText(f"已在磁盘上缺失 {len(missing)} 个受管目录；不会自动复原。" if missing else "")
+
+    def restore_missing_ui(self):
+        raw = self.missing_combo.currentData()
+        if not raw:
+            return
+        root = self.root_path()
+        path = Path(raw)
+        try:
+            ancestors = [p for p in reversed(path.parents) if p != root and p.is_relative_to(root) and not p.is_dir()]
+            preview = "\n".join(str(p) for p in [*ancestors, path])
+            if QMessageBox.question(self, "重建空目录", "只重建文件夹，不恢复其中丢失的文件：\n" + preview) == QMessageBox.StandardButton.Yes:
+                restore_missing(root, path)
+                self.refresh_browser()
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "重建失败", str(exc))
 
     def open_destination(self):
         path = self.target_directory() or self.last_target
@@ -741,8 +1162,9 @@ class MainWindow(QMainWindow):
             self.archive_status.setText("目标分类文件夹不存在，请先生成目录。")
 
     def closeEvent(self, event):
-        if self.worker is not None and self.worker.isRunning():
-            self.ocr_status.setText("识别正在完成，请稍后关闭窗口。")
+        if ((self.worker is not None and self.worker.isRunning()) or
+                (self.file_worker is not None and self.file_worker.isRunning())):
+            self.statusBar().showMessage("后台任务正在完成，请稍后关闭窗口。")
             event.ignore()
         else:
             super().closeEvent(event)
@@ -786,6 +1208,18 @@ def main():
         try:
             lines = local_ocr(Path(sys.argv[2]))
             output.write_text(json.dumps({"courses": extract_candidates(lines)}, ensure_ascii=False), encoding="utf-8")
+            return 0
+        except Exception as exc:
+            output.write_text(json.dumps({"error": str(exc)}, ensure_ascii=False), encoding="utf-8")
+            return 1
+    if len(sys.argv) == 5 and sys.argv[1] == "--verify-archive":
+        root, source, output = map(Path, sys.argv[2:5])
+        try:
+            _, _, failures, _ = create_plan(root, "打包验收", ["示例课程"])
+            if failures:
+                raise OSError("; ".join(failures))
+            target = transfer(source, root / "打包验收" / "示例课程" / "课件", root=root, mode="copy")
+            output.write_text(json.dumps({"target": str(target)}, ensure_ascii=False), encoding="utf-8")
             return 0
         except Exception as exc:
             output.write_text(json.dumps({"error": str(exc)}, ensure_ascii=False), encoding="utf-8")

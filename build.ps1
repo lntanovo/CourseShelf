@@ -37,6 +37,23 @@ try {
     if (Test-Path -LiteralPath $conflictingIcu -PathType Leaf) {
         Remove-Item -LiteralPath $conflictingIcu -Force
     }
+    $uninstallDist = Join-Path $work 'uninstaller-dist'
+    & $Python -m PyInstaller `
+        --noconfirm --clean --onefile --windowed `
+        --name uninstall `
+        --distpath $uninstallDist --workpath (Join-Path $work 'uninstaller-work') --specpath $work `
+        uninstaller.py
+    if ($LASTEXITCODE -ne 0) {
+        throw "Uninstaller build failed with exit code $LASTEXITCODE"
+    }
+    $release = Join-Path $distribution 'FilesOrganizer'
+    Copy-Item -LiteralPath (Join-Path $uninstallDist 'uninstall.exe') -Destination (Join-Path $release 'uninstall.exe') -Force
+    $files = Get-ChildItem -LiteralPath $release -Recurse -File | Where-Object {
+        $_.Name -ne 'uninstall.exe' -and $_.Name -ne 'release-manifest.json'
+    } | ForEach-Object {
+        @{ path = [IO.Path]::GetRelativePath($release, $_.FullName); sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
+    }
+    @{ schema_version = 1; files = @($files) } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $release 'release-manifest.json') -Encoding utf8
     Write-Host "Release ready: $exe"
 }
 finally {

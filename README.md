@@ -1,109 +1,76 @@
-# CourseShelf · 课表资料整理
+# CourseShelf · 课表资料整理 / Timetable File Organizer
 
-**本地识别课表，整理课程资料。** 一个完全离线的 Windows 桌面应用：从课表图片提取课程名，人工核对后创建课程文件夹，并将资料复制到指定分类。
-
-**Turn a timetable into organized course folders.** CourseShelf is an offline Windows desktop app that reads a timetable image, lets you correct course names, creates course folders, and copies files into a chosen category.
-
-[中文说明](#中文) · [English](#english)
+完全本地的 Windows 桌面工具：识别课表、人工核对课程、建立课程分类，并把资料复制或移动到指定目录。Offline Windows desktop app for timetable OCR and course file organization.
 
 ## 中文
 
-### 下载与使用
+### 启动和资料位置
 
-从 [Releases](https://github.com/lntanovo/CourseShelf/releases) 下载 `FilesOrganizer-Windows.zip`，**完整解压**后双击 `FilesOrganizer/FilesOrganizer.exe`。请保留同目录下的 `_internal` 文件夹；只复制 exe 无法运行。发布包包含 Qt 和本地 OCR 模型，无需安装 Python。
+完整解压 `dist\FilesOrganizer` 发布文件夹，双击其中的 `FilesOrganizer.exe`。`_internal` 文件夹和本地 OCR 模型必须与 exe 一起保留。发布文件夹可以搬到别的位置；不需要开发机的 Python 或虚拟环境。本地构建不会自动上传 GitHub 或创建 Release。
 
-1. 在窗口顶部选择一个已有的本机文件夹作为**资料总目录**。完整路径始终显示在界面中，也可一键在资源管理器中打开。
-2. 导入 PNG/JPG/JPEG 课表，点击“开始本地识别”，然后修改、添加或删除识别出的课程名。
-3. 输入学期名称，预览并生成 `学期 / 课程 / 分类` 目录。每门课程固定包含 `课件`、`作业`、`复习资料`、`其他` 四类；重复生成会复用已有目录。
-4. 选择或拖入一个文件，再选学期、课程和分类。核对界面中的来源与完整目标路径后复制。原文件保留；同名文件会自动加序号，不会覆盖。
-
-资料保存在**你选择的普通文件夹**中，例如：
+首次运行，点击顶部“选择资料目录”，选择一个**已有的普通文件夹**。完整路径常驻窗口顶部，可用“打开资料目录”在资源管理器中查看。资料实际保存在：
 
 ```text
-资料总目录\2026秋季学期\通信原理\课件\讲义.pdf
+你选择的资料总目录\学期\课程\分类\文件
 ```
 
-右侧目录树和文件列表直接读取磁盘，复制后立即刷新。重启会恢复上次的资料总目录和查看位置。`%LOCALAPPDATA%\FilesOrganizerDemo\settings.json` 只保存这些路径设置，**不存放课程资料**。课表 OCR 在本机运行，不上传图片或文件。
+资料目录中的 `.courseshelf.json` 只记录应用管理的目录清单；真实文件仍以磁盘为准。`%LOCALAPPDATA%\FilesOrganizerDemo\settings.json` 只保存上次使用的路径，不保存课表图片或课程资料。把资料总目录搬走后，需要在界面重新选择新位置。
 
-### 从源码运行与打包
+### 操作流程
 
-需要 64 位 Windows 10/11 和 CPython 3.12。在 PowerShell 中执行：
+1. 在第 ① 步选择或拖入**一张** PNG/JPG/JPEG 课表图，点击“开始本地识别”，再核对、修改课程名。图片放下后不会自动识别；重新识别会询问是否替换已编辑的列表。也可以手动录入课程。
+2. 在第 ② 步填写学期并预览。预览不写磁盘；“确认生成目录”才创建。点击“下一步”时若还有待建目录，会弹窗提供“创建并继续 / 返回检查 / 取消”。新课程默认建 `课件`、`作业`、`复习资料`、`其他` 四类。
+3. 在第 ② 步选择课程后，可添加、重命名、将分类送入 Windows 回收站、恢复默认分类，或把已有课程目录纳入管理。删除分类前显示路径和内容数量。普通重复生成不会补回已删除的分类。
+4. 在第 ③ 步选择或拖入**一个**资料文件。文件名规则会给出课程、分类建议和理由；含糊时请手动选。拖到右侧课程或分类节点会优先使用该节点。检查来源与最终目标完整路径，选择“复制（默认）”或“移动”后再确认。拖入本身不会修改文件。
+5. 复制会保留来源；移动先完整复制并验证大小与 SHA-256，再删除来源。同名文件加序号，绝不覆盖。文件操作有进度和取消按钮。成功后右侧文件列表立即刷新。
+
+右侧目录树直接读取磁盘；重启后恢复资料总目录和上次查看的位置。外部删除受管目录后，刷新会提示缺失；点击“重建选中空目录”只建立空文件夹，**不能恢复丢失的文件内容**。外部新建的分类刷新后可浏览、归档，也可把该课程重新纳入管理。
+
+### 卸载便携版
+
+关闭 CourseShelf 后，双击发布文件夹中的 `uninstall.exe`。它会说明要清理的发布文件夹，并询问是否清除本机保存的路径设置。只删除发布清单中校验匹配的程序文件；用户自行放进发布目录的文件及资料总目录不会删除。便携版没有 Windows“已安装应用”注册项。
+
+### 从源码运行、测试和重新打包
+
+需要 64 位 Windows 10/11 和 CPython 3.12。在 PowerShell 中：
 
 ```powershell
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-build.txt
 .\.venv\Scripts\python.exe app.py
-.\build.ps1
-```
-
-`build.ps1` 生成 `dist\FilesOrganizer\FilesOrganizer.exe`。分享时请压缩并发送整个 `dist\FilesOrganizer` 文件夹。打包脚本会移除可能从开发机 PATH 误收集、与 Qt 冲突的 `icuuc.dll`。
-
-### 验证与限制
-
-```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p test_optimization.py -v
 .\.venv\Scripts\python.exe tests\smoke_demo.py
+.\build.ps1
+.\tests\packed_acceptance.ps1
 ```
 
-测试会在系统临时目录自动生成**虚构课表**和资料，不需要真实用户截图。它验证离线 OCR、9 门课程提取、人工修改、46 个目录生成及重复生成、同名复制、重启后路径与文件列表恢复、失效路径提示。开发时还用一张真实的清晰网页课表截图验证过 9 门课程；因包含真实课程安排与教师姓名，该图片不上传到公开仓库。
+输出为 `dist\FilesOrganizer\FilesOrganizer.exe`、`uninstall.exe`、`release-manifest.json` 和 `_internal`。分享时必须压缩并发送**整个** `dist\FilesOrganizer` 文件夹。`build.ps1` 可重复运行，清理 PyInstaller 旧产物并重建发布清单。`课表.png` 是本地真实回归图片，含私人课程信息，已在 `.gitignore` 中排除。
+`packed_acceptance.ps1` 会把发布文件夹复制到系统临时目录，在那里运行 exe、离线 OCR 和卸载测试；若本机没有私人 `课表.png`，它会生成虚构课表。测试资料与设置也只放在临时目录，结束后清理副本。
+本轮逐项结果见 [验收记录](VALIDATION.md)。
 
-OCR 主要适用于清晰、带“课程代码 / 课程名称 / 课程类别”汇总表的课表。其他版式可能漏识别或混入无关文字，务必人工核对。当前版本没有自动分类、批量归档、全文检索、云同步或安装程序。
-
-### 文件说明
+### 文件说明与范围
 
 | 文件 | 作用 |
 | --- | --- |
-| `app.py` | PySide6 桌面界面与交互 |
-| `organizer.py` | 本地 OCR、课程提取、目录生成和安全复制 |
-| `build.ps1` | 可重复执行的 Windows 打包脚本 |
-| `requirements*.txt` | 运行与打包依赖版本 |
-| `tests/smoke_demo.py` | 使用虚构课表的端到端测试 |
+| `app.py` | PySide6 界面、交互和后台任务 |
+| `organizer.py` | 本地 RapidOCR、课程提取和原有基础文件操作 |
+| `catalog.py` | 每课分类管理、受管目录清单、外部缺失检测 |
+| `classifier.py` | 仅根据文件名给出可解释的本地建议 |
+| `file_ops.py` | 分块复制/移动、校验、取消及同名保护 |
+| `uninstaller.py` | 便携版卸载程序源代码 |
+| `build.ps1` | 一键重建 exe、运行组件和发布清单 |
+| `tests/` | 虚构课表和临时目录验收测试 |
+
+本版仍是单文件逐次整理。OCR 对清晰的课程汇总表效果较好，其他版式可能需要手工修正。未实现全文检索、云同步、自动监控、批量归档、安装程序或文件内容理解。
 
 ## English
 
-### Download and use
+Extract the entire `dist\FilesOrganizer` folder and double-click `FilesOrganizer.exe`. Keep `_internal` beside it; the release includes Qt and local OCR models. Choose an existing ordinary folder as the library root. Your documents live at `root\semester\course\category\file`, never inside AppData. The app stores only path preferences in `%LOCALAPPDATA%\FilesOrganizerDemo\settings.json` and a lightweight folder manifest in the chosen root.
 
-Download `FilesOrganizer-Windows.zip` from [Releases](https://github.com/lntanovo/CourseShelf/releases), **extract the entire archive**, and double-click `FilesOrganizer/FilesOrganizer.exe`. Keep the `_internal` directory next to the executable. The portable release includes Qt and local OCR models; Python is not required on the user's PC.
+Drop or select one PNG/JPG/JPEG timetable, run local OCR, and correct the course names. Previewing folders does not create them; the Next button asks before creating missing folders. Manage categories per course, including Recycle Bin deletion. Drop one document to see local filename suggestions and the full destination. **Copy is the default**; move requires explicit selection, verifies the destination, then removes the source. Name collisions receive a numbered copy without overwriting. Refresh detects externally deleted managed folders and offers to recreate empty folders; it cannot recover deleted contents.
 
-1. Choose an existing local folder as the **library root** at the top of the window. Its full path stays visible and can be opened in File Explorer.
-2. Select a PNG/JPG/JPEG timetable, run local OCR, and edit, add, or remove the proposed course names.
-3. Enter a semester name, preview the plan, and create `semester / course / category` folders. Each course gets four fixed categories: lecture materials, assignments, review materials, and other. Existing folders are reused.
-4. Choose or drop one file, select a semester, course, and category, and review the displayed source and full destination path before copying. The source remains intact; name collisions receive a numbered suffix.
-
-Files live in the **ordinary folder you selected**, not inside the app or AppData. The directory tree and file list reflect the disk and refresh after a copy. The app restores the last library root and viewed folder on restart. `%LOCALAPPDATA%\FilesOrganizerDemo\settings.json` stores path preferences only. Timetable images and documents are never sent to a cloud service.
-
-### Run from source and build
-
-Use 64-bit Windows 10/11 and CPython 3.12. In PowerShell:
-
-```powershell
-py -3.12 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements-build.txt
-.\.venv\Scripts\python.exe app.py
-.\build.ps1
-```
-
-The build creates `dist\FilesOrganizer\FilesOrganizer.exe`. Distribute the **whole** `dist\FilesOrganizer` folder as an archive. The script removes an incompatible `icuuc.dll` that may be collected from a developer's PATH.
-
-### Test and limitations
-
-```powershell
-.\.venv\Scripts\python.exe tests\smoke_demo.py
-```
-
-The test creates a **fictional timetable** and temporary files. It covers offline OCR, correction of course names, folder creation and reuse, safe duplicate copies, persistence, and invalid paths. A real clear web timetable with a course summary table was also checked during development; it is excluded from this public repository because it contains real teachers and schedule details.
-
-OCR works best on clear timetables with a `course code / course name / course category` summary table. Other layouts may need substantial manual correction. Automatic classification, batch filing, full-text search, cloud sync, and an installer are outside this release.
-
-### Project files
-
-| File | Purpose |
-| --- | --- |
-| `app.py` | PySide6 desktop UI and workflow |
-| `organizer.py` | Local OCR, course extraction, folder creation, and safe copying |
-| `build.ps1` | Repeatable Windows packaging |
-| `requirements*.txt` | Pinned runtime and build dependencies |
-| `tests/smoke_demo.py` | End-to-end test with a fictional timetable |
+For a portable uninstall, close the app and double-click `uninstall.exe` in the release folder. It removes only matching application files from the release manifest and optionally clears path settings. It never deletes your library root or user files placed beside the app. Build from source with the PowerShell commands above; distribute the whole release folder. This version has no cloud service, batch filing, full-text search, or installer.
 
 ## License / 许可证
 
-[MIT](LICENSE). Third-party dependencies and OCR models retain their own licenses. / 第三方依赖及 OCR 模型遵循各自的许可证。
+[MIT](LICENSE). Third-party packages and OCR models retain their own licenses. / 第三方依赖和 OCR 模型遵循各自许可证。

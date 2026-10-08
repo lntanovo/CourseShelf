@@ -118,10 +118,18 @@ def main():
     app.processEvents()
     assert window.grab().save(str(work / "ui-copy-before.png"))
     window.copy_button.click()
+    loop = QEventLoop()
+    window.file_worker.finished.connect(loop.quit)
+    QTimer.singleShot(30000, loop.quit)
+    loop.exec()
     assert window.archive_status.text().startswith("复制成功"), window.archive_status.text()
     app.processEvents()
     assert window.grab().save(str(work / "ui-copy-after.png"))
     window.archive_file()
+    loop = QEventLoop()
+    window.file_worker.finished.connect(loop.quit)
+    QTimer.singleShot(30000, loop.quit)
+    loop.exec()
     assert window.archive_status.text().startswith("复制成功"), window.archive_status.text()
     assert window.copy_button.isEnabled(), "copy button became disabled after successful copy"
     target = root / "2026秋季学期" / "通信原理" / "课件"
@@ -156,7 +164,7 @@ def main():
     with patch.object(QMessageBox, "warning") as warning:
         invalid = MainWindow()
         app.processEvents()
-        assert invalid.root_edit.text() == ""
+        assert invalid.root_edit.text() == str(missing)
         assert not missing.exists()
         assert warning.called
         invalid.close()
@@ -174,4 +182,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) == 3 and sys.argv[1] == "--make-sample":
+        make_sample(Path(sys.argv[2]))
+    else:
+        main()

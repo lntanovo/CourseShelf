@@ -5,7 +5,8 @@ build/
 dist/
 build-debug/
 dist-debug/
-# Local real timetable and planning notes are not part of the public project.
+# Private timetable and internal handoff notes are not part of the public project.
 课表.png
 DEMO_HANDOFF.md
 TECHNICAL_SPEC.md
+NEXT_CHAT_PROMPT.md
