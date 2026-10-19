@@ -38,3 +38,8 @@ Relocated uninstall: 310 owned files removed; user material and empty folder pre
 
 执行 tests/verify_milestone.ps1 -Milestone m1（语法 → 10 项单元/回归 → 离线冒烟 → build.ps1 → 搬移打包验收）。全部通过，日志见 artifacts/improvement/m1-*.log。注入归档 RuntimeError 后日志含 traceback，弹窗详情可复制；OCR 关闭可取消且无存活线程。清单版本迁移入口已建立，v1→v2 在 M5 启用。
 
+
+## M2 批量归档（通过）
+
+执行 tests/verify_milestone.ps1 -Milestone m2。13 项测试、离线冒烟、打包与搬移验收全通过（原始日志 m2-*.log）。20 项中 18 成功/2 待手选，3 组同名保留两个；中途取消后无 partial 文件；20 项 PermissionError 注入逐项失败并可全部重试。收件箱替换后选中行同步错误由冒烟发现并修复，修复后重跑全套。默认复制，批次与行内均可显式选择移动。
+

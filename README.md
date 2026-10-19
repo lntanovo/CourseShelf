@@ -21,8 +21,8 @@
 1. 在第 ① 步选择或拖入**一张** PNG/JPG/JPEG 课表图，点击“开始本地识别”，再核对、修改课程名。图片放下后不会自动识别；重新识别会询问是否替换已编辑的列表。也可以手动录入课程。
 2. 在第 ② 步填写学期并预览。预览不写磁盘；“确认生成目录”才创建。点击“下一步”时若还有待建目录，会弹窗提供“创建并继续 / 返回检查 / 取消”。新课程默认建 `课件`、`作业`、`复习资料`、`其他` 四类。
 3. 在第 ② 步选择课程后，可添加、重命名、将分类送入 Windows 回收站、恢复默认分类，或把已有课程目录纳入管理。删除分类前显示路径和内容数量。普通重复生成不会补回已删除的分类。
-4. 在第 ③ 步选择或拖入**一个**资料文件。文件名规则会给出课程、分类建议和理由；含糊时请手动选。拖到右侧课程或分类节点会优先使用该节点。检查来源与最终目标完整路径，选择“复制（默认）”或“移动”后再确认。拖入本身不会修改文件。
-5. 复制会保留来源；移动先完整复制并验证大小与 SHA-256，再删除来源。同名文件加序号，绝不覆盖。文件操作有进度和取消按钮。成功后右侧文件列表立即刷新。
+4. 在第 ③ 步向收件箱添加多个文件或文件夹（默认不递归，可显式包含子文件夹）。点击“应用全部高置信建议”，逐行核对课程、分类和操作；无匹配项需手选。文件名规则会给出课程、分类建议和理由；含糊时请手动选。拖到右侧课程或分类节点会优先使用该节点。可在行内或下方编辑选中行的目标，选择“复制（默认）”或“移动”后点击“执行 N 项”。拖入本身不会修改文件。
+5. 复制会保留来源；移动先完整复制并验证大小与 SHA-256，再删除来源。同名文件加序号，绝不覆盖。文件操作有进度和取消按钮，逐行报告成功/跳过/失败及原因；失败不会中断整批，可仅重试失败项。同名策略为保留两个（默认）或跳过，不提供覆盖。已成功项不会被再次执行。成功后右侧文件列表立即刷新。
 
 右侧目录树直接读取磁盘；重启后恢复资料总目录和上次查看的位置。外部删除受管目录后，刷新会提示缺失；点击“重建选中空目录”只建立空文件夹，**不能恢复丢失的文件内容**。外部新建的分类刷新后可浏览、归档，也可把该课程重新纳入管理。
 
@@ -61,15 +61,15 @@ py -3.12 -m venv .venv
 | `build.ps1` | 一键重建 exe、运行组件和发布清单 |
 | `tests/` | 虚构课表和临时目录验收测试 |
 
-本版仍是单文件逐次整理。OCR 对清晰的课程汇总表效果较好，其他版式可能需要手工修正。未实现全文检索、云同步、自动监控、批量归档、安装程序或文件内容理解。
+本版使用批量收件箱，单文件也通过同一流程归档。OCR 对清晰的课程汇总表效果较好，其他版式可能需要手工修正。未实现全文检索、云同步、自动监控、安装程序或文件内容理解。
 
 ## English
 
 Extract the entire `dist\FilesOrganizer` folder and double-click `FilesOrganizer.exe`. Keep `_internal` beside it; the release includes Qt and local OCR models. Choose an existing ordinary folder as the library root. Your documents live at `root\semester\course\category\file`, never inside AppData. The app stores only path preferences in `%LOCALAPPDATA%\FilesOrganizerDemo\settings.json` and a lightweight folder manifest in the chosen root.
 
-Drop or select one PNG/JPG/JPEG timetable, run local OCR, and correct the course names. Previewing folders does not create them; the Next button asks before creating missing folders. Manage categories per course, including Recycle Bin deletion. Drop one document to see local filename suggestions and the full destination. **Copy is the default**; move requires explicit selection, verifies the destination, then removes the source. Name collisions receive a numbered copy without overwriting. Refresh detects externally deleted managed folders and offers to recreate empty folders; it cannot recover deleted contents.
+Drop or select one PNG/JPG/JPEG timetable, run local OCR, and correct the course names. Previewing folders does not create them; the Next button asks before creating missing folders. Manage categories per course, including Recycle Bin deletion. Add multiple documents or folders to the inbox (recursion is opt-in), apply confident suggestions, then review each target before executing. Unmatched rows require manual selection. Failed rows can be retried; cancellation preserves completed items. **Copy is the default**; move requires explicit selection, verifies the destination, then removes the source. Name collisions receive a numbered copy without overwriting. Refresh detects externally deleted managed folders and offers to recreate empty folders; it cannot recover deleted contents.
 
-For a portable uninstall, close the app and double-click `uninstall.exe` in the release folder. It removes only matching application files from the release manifest and optionally clears path settings. It never deletes your library root or user files placed beside the app. Build from source with the PowerShell commands above; distribute the whole release folder. This version has no cloud service, batch filing, full-text search, or installer.
+For a portable uninstall, close the app and double-click `uninstall.exe` in the release folder. It removes only matching application files from the release manifest and optionally clears path settings. It never deletes your library root or user files placed beside the app. Build from source with the PowerShell commands above; distribute the whole release folder. This version has no cloud service, full-text search, or installer.
 
 ## License / 许可证
 

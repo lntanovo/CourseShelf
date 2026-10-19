@@ -15,7 +15,7 @@ from PySide6.QtCore import QThread, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QComboBox, QFileDialog,
-    QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+    QCheckBox, QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
     QInputDialog, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QProgressBar,
     QPushButton, QScrollArea, QSizePolicy, QSplitter, QTableWidget, QTableWidgetItem,
     QRadioButton, QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
@@ -30,9 +30,11 @@ from file_ops import Cancelled, PartialMoveError, transfer
 from runtime import (acquire_instance, configure_logging, install_exception_hooks, log,
                      open_with_shell, report_exception)
 from dialogs import confirm
+from inbox import build_inbox
+from tasks import BatchWorker, FileWorker, TaskWorker
 
 
-class OcrWorker(QThread):
+class OcrWorker(TaskWorker):
     completed = Signal(list)
     failed = Signal(str)
 
@@ -78,7 +80,7 @@ class OcrWorker(QThread):
 
 
 class DropFileEdit(QLineEdit):
-    file_dropped = Signal(str)
+    file_dropped = Signal(list)
     rejected = Signal(str)
 
     def __init__(self):
@@ -94,13 +96,12 @@ class DropFileEdit(QLineEdit):
 
     def dropEvent(self, event):
         urls = event.mimeData().urls()
-        if len(urls) == 1 and urls[0].isLocalFile() and Path(urls[0].toLocalFile()).is_file():
-            url = urls[0]
-            self.file_dropped.emit(url.toLocalFile())
+        if urls and all(url.isLocalFile() for url in urls):
+            self.file_dropped.emit([url.toLocalFile() for url in urls])
             event.setDropAction(Qt.DropAction.CopyAction)
             event.accept()
         else:
-            self.rejected.emit("一次只能拖入一个本地普通文件")
+            self.rejected.emit("请拖入本地普通文件或文件夹")
             event.ignore()
 
 
@@ -145,7 +146,7 @@ class ImageDropZone(QLabel):
 
 
 class FileDropTree(QTreeWidget):
-    file_on_item = Signal(str, str)
+    file_on_item = Signal(list, str)
     rejected = Signal(str)
 
     def __init__(self):
@@ -166,34 +167,12 @@ class FileDropTree(QTreeWidget):
     def dropEvent(self, event):
         urls = event.mimeData().urls()
         item = self.itemAt(event.position().toPoint())
-        if len(urls) == 1 and urls[0].isLocalFile() and Path(urls[0].toLocalFile()).is_file() and item is not None:
-            self.file_on_item.emit(urls[0].toLocalFile(), item.data(0, Qt.ItemDataRole.UserRole))
+        if urls and all(url.isLocalFile() for url in urls) and item is not None:
+            self.file_on_item.emit([url.toLocalFile() for url in urls], item.data(0, Qt.ItemDataRole.UserRole))
             event.setDropAction(Qt.DropAction.CopyAction)
             event.accept()
         else:
-            self.rejected.emit("请将一个本地普通文件拖到课程或分类目录")
-
-
-class FileWorker(QThread):
-    progress = Signal(int)
-    completed = Signal(str)
-    failed = Signal(str)
-    def __init__(self, source: Path, destination: Path, root: Path, mode: str):
-        super().__init__()
-        self.source, self.destination, self.root, self.mode = source, destination, root, mode
-        self.cancel_requested = False
-
-    def run(self):
-        try:
-            target = transfer(self.source, self.destination, root=self.root, mode=self.mode,
-                              progress=self.progress.emit, cancelled=lambda: self.cancel_requested)
-            self.completed.emit(str(target))
-        except (OSError, ValueError, Cancelled, PartialMoveError) as exc:
-            log.exception("file_failed source=%s", self.source)
-            self.failed.emit(str(exc))
-        except Exception as exc:
-            report_exception(*sys.exc_info())
-            self.failed.emit(str(exc))
+            self.rejected.emit("请将本地文件或文件夹拖到课程或分类目录")
 
 
 class MainWindow(QMainWindow):
@@ -206,6 +185,9 @@ class MainWindow(QMainWindow):
         self.worker: OcrWorker | None = None
         self.file_worker: FileWorker | None = None
         self._suggesting = False
+        self.inbox_items = []
+        self._loading_inbox = False
+        self._selected_inbox = -1
         self.last_target: Path | None = None
         self.current_directory: Path | None = None
         self.tree_items: dict[Path, QTreeWidgetItem] = {}
@@ -432,18 +414,39 @@ class MainWindow(QMainWindow):
 
     def _make_archive_tab(self) -> QWidget:
         scroll, layout = self._scroll_content()
-        note = QLabel("拖入或选择一个文件；确认课程、分类及路径后，再选择复制或移动。默认复制，不覆盖同名文件。")
+        note = QLabel("拖入文件或文件夹到收件箱。逐行核对建议后执行；默认复制，同名保留两个。")
         note.setWordWrap(True)
         layout.addWidget(note)
-        card, card_layout = self._card("选择来源文件")
+        card, card_layout = self._card("收件箱")
         row = QHBoxLayout()
         self.source_edit = DropFileEdit()
-        self.source_edit.setPlaceholderText("选择或拖入一个本地文件")
-        self.source_edit.file_dropped.connect(self.source_edit.setText)
-        self.source_edit.textChanged.connect(self.suggest_target)
+        self.source_edit.setPlaceholderText("拖入多个本地文件或文件夹；也可输入一个路径")
+        self.source_edit.file_dropped.connect(self.add_to_inbox)
+        self.source_edit.textChanged.connect(self.source_text_changed)
         row.addWidget(self.source_edit, 1)
-        row.addWidget(self._button("浏览文件", self.choose_file))
+        row.addWidget(self._button("添加文件", self.choose_file))
+        row.addWidget(self._button("添加文件夹", self.choose_folder))
         card_layout.addLayout(row)
+        self.recursive_check = QCheckBox("包含子文件夹（默认关闭）")
+        card_layout.addWidget(self.recursive_check)
+        self.inbox_table = QTableWidget(0, 7)
+        self.inbox_table.setHorizontalHeaderLabels(["文件名", "大小", "课程", "分类", "理由", "操作", "状态"])
+        self.inbox_table.setMinimumHeight(210)
+        self.inbox_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.inbox_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.inbox_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.inbox_table.currentCellChanged.connect(self.select_inbox_row)
+        self.inbox_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        card_layout.addWidget(self.inbox_table)
+        actions = QHBoxLayout()
+        actions.addWidget(self._button("应用全部高置信建议", self.apply_suggestions))
+        actions.addWidget(self._button("清空收件箱", self.clear_inbox))
+        actions.addWidget(self._button("仅重试失败项", self.retry_failed))
+        card_layout.addLayout(actions)
+        self.conflict_combo = QComboBox()
+        self.conflict_combo.addItem("同名：保留两个（默认）", "keep")
+        self.conflict_combo.addItem("同名：跳过", "skip")
+        card_layout.addWidget(self.conflict_combo)
         self.source_label = QLabel("来源：尚未选择文件")
         self.source_label.setObjectName("pathText")
         self.source_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -452,7 +455,7 @@ class MainWindow(QMainWindow):
         card_layout.addWidget(self.source_label)
         layout.addWidget(card)
 
-        card, card_layout = self._card("选择目标位置")
+        card, card_layout = self._card("选中行的目标位置")
         row = QHBoxLayout()
         semester_column = QVBoxLayout()
         semester_column.addWidget(QLabel("学期"))
@@ -492,8 +495,8 @@ class MainWindow(QMainWindow):
         row.addWidget(self.copy_radio)
         row.addWidget(self.move_radio)
         card_layout.addLayout(row)
-        self.copy_radio.toggled.connect(self.update_destination)
-        self.move_radio.toggled.connect(self.update_destination)
+        self.copy_radio.toggled.connect(self.batch_mode_changed)
+        self.move_radio.toggled.connect(self.batch_mode_changed)
         row = QHBoxLayout()
         self.copy_button = self._button("确认复制到此位置", self.archive_file, True)
         row.addWidget(self.copy_button)
@@ -578,6 +581,9 @@ class MainWindow(QMainWindow):
         return path if path is not None and path.is_dir() else None
 
     def choose_root(self):
+        if self.file_worker and self.file_worker.isRunning():
+            self.statusBar().showMessage("请等待归档结束或先取消批次")
+            return
         initial = self.root_edit.text() if self.root_path() else str(Path.home())
         selected = QFileDialog.getExistingDirectory(self, "选择现有资料总目录", initial)
         if selected:
@@ -975,7 +981,9 @@ class MainWindow(QMainWindow):
     def update_destination(self, *_):
         source_text = self.source_edit.text().strip()
         self.source_label.setText("来源文件：" + source_text if source_text else "来源文件：尚未选择")
-        self.copy_button.setText("确认移动到此位置" if self.move_radio.isChecked() else "确认复制到此位置")
+        if not self._loading_inbox:
+            self.sync_selected_inbox()
+        self.copy_button.setText(f"执行 {len(self.inbox_items)} 项")
         destination_dir = self.target_directory()
         if destination_dir is None:
             self.destination_label.setText("最终目标文件：请先选择资料目录并生成课程分类")
@@ -985,58 +993,236 @@ class MainWindow(QMainWindow):
             proposed = planned_copy_path(Path(source_text), destination_dir)
             self.destination_label.setText("最终目标文件：" + str(proposed))
 
-    def choose_file(self):
-        selected, _ = QFileDialog.getOpenFileName(self, "选择待复制的文件")
-        if selected:
-            self.source_edit.setText(selected)
+    def course_snapshot(self):
+        root = self.root_path()
+        result = {}
+        if root:
+            for semester in root.iterdir():
+                if not semester.is_dir() or semester.is_symlink() or semester.is_junction():
+                    continue
+                for course in semester.iterdir():
+                    if course.is_dir() and not course.is_symlink() and not course.is_junction():
+                        result[semester.name + "/" + course.name] = disk_categories(root, semester.name, course.name)
+        return result
 
-    def archive_file(self):
-        destination = self.target_directory()
+    def choose_file(self):
+        selected, _ = QFileDialog.getOpenFileNames(self, "选择待归档文件")
+        if selected:
+            self.add_to_inbox(selected)
+
+    def choose_folder(self):
+        selected = QFileDialog.getExistingDirectory(self, "选择待归档文件夹")
+        if selected:
+            self.add_to_inbox([selected])
+
+    def source_text_changed(self, raw):
+        if self._loading_inbox or not raw.strip():
+            return
+        self.add_to_inbox([raw], replace=True, apply=True)
+        self.suggest_target()
+
+    def add_to_inbox(self, paths, *, replace=False, apply=False, target=None):
+        if self.file_worker and self.file_worker.isRunning():
+            return
         try:
-            from catalog import writable_catalog
-            if self.root_path():
-                writable_catalog(self.root_path())
-            if not self.source_edit.text().strip():
-                raise ValueError("请先选择来源文件")
-            if destination is None:
-                raise ValueError("请先选择资料目录、学期、课程和分类")
+            snapshot = self.course_snapshot()
+            added = build_inbox(paths, list(snapshot), snapshot, recursive=self.recursive_check.isChecked())
+            if target:
+                relative = Path(target).relative_to(self.root_path())
+                for item in added:
+                    item.course = "/".join(relative.parts[:2])
+                    item.category = relative.parts[2] if len(relative.parts) >= 3 else None
+                    item.reason = "目标来自拖放位置，执行前请核对"
+            elif apply:
+                for item in added:
+                    item.course, item.category = item.suggested_course, item.suggested_category
+            if replace:
+                self.inbox_items = []
+            existing = {item.source for item in self.inbox_items}
+            self.inbox_items.extend(item for item in added if item.source not in existing)
+            self.render_inbox()
+            if self.inbox_items:
+                row = max(0, len(self.inbox_items) - len(added))
+                self.inbox_table.setCurrentCell(row, 0)
+                self.select_inbox_row(row)
+            self.tabs.setCurrentIndex(2)
+        except (OSError, ValueError) as exc:
+            self.archive_status.setText("不能添加：" + str(exc))
+
+    def render_inbox(self):
+        self._loading_inbox = True
+        snapshot = self.course_snapshot()
+        self.inbox_table.blockSignals(True)
+        self.inbox_table.setRowCount(len(self.inbox_items))
+        for row, item in enumerate(self.inbox_items):
+            self.inbox_table.setItem(row, 0, QTableWidgetItem(item.source.name))
+            self.inbox_table.item(row, 0).setToolTip(str(item.source))
+            self.inbox_table.setItem(row, 1, QTableWidgetItem(str(item.size)))
+            course = QComboBox()
+            course.addItem("需手选", None)
+            for key in snapshot:
+                course.addItem(key, key)
+            course.setCurrentIndex(max(0, course.findData(item.course)))
+            course.currentIndexChanged.connect(lambda _, r=row: self.row_course_changed(r))
+            self.inbox_table.setCellWidget(row, 2, course)
+            category = QComboBox()
+            category.addItem("需手选", None)
+            for name in snapshot.get(item.course, []):
+                category.addItem(name, name)
+            category.setCurrentIndex(max(0, category.findData(item.category)))
+            category.currentIndexChanged.connect(lambda _, r=row: self.row_category_changed(r))
+            self.inbox_table.setCellWidget(row, 3, category)
+            self.inbox_table.setItem(row, 4, QTableWidgetItem(item.reason))
+            mode = QComboBox()
+            mode.addItem("复制", "copy")
+            mode.addItem("移动", "move")
+            mode.setCurrentIndex(mode.findData(item.mode))
+            mode.currentIndexChanged.connect(lambda _, r=row: self.row_mode_changed(r))
+            self.inbox_table.setCellWidget(row, 5, mode)
+            state = {"pending": "待执行", "ok": "成功", "skipped": "跳过", "failed": "失败"}[item.status]
+            if not item.course or not item.category:
+                state += " · 需手选"
+            self.inbox_table.setItem(row, 6, QTableWidgetItem(state + (" · " + item.error if item.error else "")))
+        self.inbox_table.blockSignals(False)
+        self._loading_inbox = False
+        self.copy_button.setText(f"执行 {len(self.inbox_items)} 项")
+
+    def row_course_changed(self, row):
+        item = self.inbox_items[row]
+        item.course = self.inbox_table.cellWidget(row, 2).currentData()
+        item.category = None
+        self.render_inbox()
+        self.inbox_table.setCurrentCell(row, 0)
+        self.select_inbox_row(row)
+
+    def row_category_changed(self, row):
+        self.inbox_items[row].category = self.inbox_table.cellWidget(row, 3).currentData()
+        self.select_inbox_row(row)
+
+    def row_mode_changed(self, row):
+        self.inbox_items[row].mode = self.inbox_table.cellWidget(row, 5).currentData()
+
+    def select_inbox_row(self, row, *_):
+        if self._loading_inbox or not 0 <= row < len(self.inbox_items):
+            return
+        self._selected_inbox = row
+        item = self.inbox_items[row]
+        self._loading_inbox = True
+        self.source_edit.setText(str(item.source))
+        if item.course:
+            semester, course = Path(item.course).parts
+            self.archive_semester_combo.setCurrentText(semester)
+            self.course_combo.setCurrentText(course)
+        else:
+            self.course_combo.setCurrentIndex(-1)
+        if item.category:
+            self.category_combo.setCurrentText(item.category)
+        else:
+            self.category_combo.setCurrentIndex(-1)
+        self.suggestion_label.setText("文件名建议：" + item.reason)
+        self._loading_inbox = False
+        self.update_destination()
+
+    def sync_selected_inbox(self):
+        row = self._selected_inbox
+        if not 0 <= row < len(self.inbox_items):
+            return
+        item = self.inbox_items[row]
+        item.course = (self.archive_semester_combo.currentText() + "/" + self.course_combo.currentText()) if self.course_combo.currentData() else None
+        item.category = self.category_combo.currentText() or None
+        for col, value in ((2, item.course), (3, item.category)):
+            widget = self.inbox_table.cellWidget(row, col)
+            if widget:
+                widget.blockSignals(True)
+                if col == 3:
+                    widget.clear()
+                    widget.addItem("需手选", None)
+                    for name in self.course_snapshot().get(item.course, []):
+                        widget.addItem(name, name)
+                widget.setCurrentIndex(max(0, widget.findData(value)))
+                widget.blockSignals(False)
+
+    def apply_suggestions(self):
+        if self.file_worker and self.file_worker.isRunning():
+            return
+        for item in self.inbox_items:
+            if item.status != "ok" and item.suggested_course and item.suggested_category:
+                item.course, item.category = item.suggested_course, item.suggested_category
+        self.render_inbox()
+
+    def clear_inbox(self):
+        if self.file_worker and self.file_worker.isRunning():
+            return
+        self.inbox_items.clear()
+        self._selected_inbox = -1
+        self.render_inbox()
+
+    def batch_mode_changed(self):
+        if self.file_worker and self.file_worker.isRunning():
+            return
+        mode = "move" if self.move_radio.isChecked() else "copy"
+        for item in self.inbox_items:
+            item.mode = mode
+        self.render_inbox()
+        self.update_destination()
+
+    def archive_file(self, *, indices=None):
+        try:
             if self.file_worker is not None and self.file_worker.isRunning():
                 return
-            mode = "move" if self.move_radio.isChecked() else "copy"
+            root = self.root_path()
+            if root is None or not self.inbox_items:
+                raise ValueError("请选择资料目录并添加待归档文件")
+            if indices is None:
+                indices = [i for i, item in enumerate(self.inbox_items) if item.status in {"pending", "skipped"}]
+            if not indices:
+                self.archive_status.setText("没有待执行项；失败项请使用“仅重试失败项”")
+                return
             self.copy_button.setEnabled(False)
+            for widget in (self.source_edit, self.root_edit, self.archive_semester_combo, self.course_combo,
+                           self.category_combo, self.move_radio, self.copy_radio, self.conflict_combo):
+                widget.setEnabled(False)
+            self.inbox_table.setEnabled(False)
             self.cancel_file_button.setEnabled(True)
-            self.file_progress.setValue(0)
             self.file_progress.setVisible(True)
-            self.archive_status.setText(("正在移动" if mode == "move" else "正在复制") + "，请稍候…")
-            self.file_worker = FileWorker(Path(self.source_edit.text()), destination, self.root_path(), mode)
+            self.file_worker = BatchWorker(self.inbox_items, root, conflict=self.conflict_combo.currentData(), indices=indices)
             self.file_worker.progress.connect(self.file_progress.setValue)
-            self.file_worker.completed.connect(self.file_finished)
-            self.file_worker.failed.connect(self.file_failed)
+            self.file_worker.item_done.connect(self.batch_item_done)
+            self.file_worker.completed.connect(self.batch_finished)
             self.file_worker.finished.connect(self.file_stopped)
             self.file_worker.start()
         except (OSError, ValueError) as exc:
-            self.archive_status.setText("复制失败：" + str(exc))
+            self.archive_status.setText("归档失败：" + str(exc))
 
-    def file_finished(self, target: str):
-        path = Path(target)
-        self.last_target = path.parent
-        mode = self.file_worker.mode
-        self.archive_status.setText(("移动成功：" if mode == "move" else "复制成功，来源文件保持不变：") + target)
-        self.refresh_browser(preferred=str(path.parent))
-        self.update_destination()
+    def retry_failed(self):
+        indices = [index for index, item in enumerate(self.inbox_items) if item.status == "failed"]
+        if indices:
+            self.archive_file(indices=indices)
 
-    def file_failed(self, error: str):
-        self.archive_status.setText("文件操作失败：" + error)
-        self.refresh_browser()
+    def batch_item_done(self, row, result):
+        item = self.inbox_items[row]
+        item.status, item.error, item.target = result["status"], result["error"], result["target"]
+        if item.target:
+            self.last_target = Path(item.target).parent
+        self.render_inbox()
+
+    def batch_finished(self, summary):
+        prefix = "移动成功" if self.file_worker.mode == "move" else "复制成功"
+        self.archive_status.setText(f"{prefix} {summary['ok']}、跳过 {summary['skipped']}、失败 {summary['failed']}")
+        self.refresh_browser(preferred=str(self.last_target) if self.last_target else None)
 
     def file_stopped(self):
+        for widget in (self.source_edit, self.root_edit, self.archive_semester_combo, self.course_combo,
+                       self.category_combo, self.move_radio, self.copy_radio, self.conflict_combo):
+            widget.setEnabled(True)
         self.copy_button.setEnabled(True)
+        self.inbox_table.setEnabled(True)
         self.cancel_file_button.setEnabled(False)
         self.file_progress.setVisible(False)
 
     def cancel_file(self):
         if self.file_worker is not None:
-            self.file_worker.cancel_requested = True
+            self.file_worker.request_cancel()
 
     def suggest_target(self, *_):
         if self._suggesting:
@@ -1063,23 +1249,13 @@ class MainWindow(QMainWindow):
             self._suggesting = False
             self.update_destination()
 
-    def file_dropped_on_tree(self, source: str, raw_target: str):
+    def file_dropped_on_tree(self, sources, raw_target):
         root = self.root_path()
         target = Path(raw_target)
-        if root is None or not target.is_dir() or not target.resolve().is_relative_to(root.resolve()):
-            self.archive_status.setText("目标目录无效；未操作文件。")
+        if root is None or not target.is_dir() or not target.resolve().is_relative_to(root.resolve()) or len(target.relative_to(root).parts) < 2:
+            self.archive_status.setText("请拖到课程或分类目录，未操作文件")
             return
-        relative = target.relative_to(root)
-        if len(relative.parts) < 2:
-            self.archive_status.setText("请拖到课程或分类目录；未操作文件。")
-            return
-        self.tabs.setCurrentIndex(2)
-        self.archive_semester_combo.setCurrentText(relative.parts[0])
-        self.course_combo.setCurrentText(relative.parts[1])
-        self.source_edit.setText(source)
-        if len(relative.parts) >= 3:
-            self.category_combo.setCurrentText(relative.parts[2])
-        self.suggestion_label.setText("目标来自拖放位置；请确认后再复制或移动。")
+        self.add_to_inbox(sources if isinstance(sources, list) else [sources], target=target)
 
     def _managed_course(self) -> tuple[Path, str, str] | None:
         root = self.root_path()

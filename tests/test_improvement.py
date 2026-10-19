@@ -43,6 +43,7 @@ class ImprovementTests(unittest.TestCase):
         self.root.mkdir()
         self.environment = patch.dict(os.environ, {"FILES_ORGANIZER_CONFIG_DIR": str(self.base / "settings")})
         self.environment.start()
+        configure_logging()
 
     def tearDown(self):
         for handler in list(log.handlers):
@@ -107,7 +108,7 @@ class ImprovementTests(unittest.TestCase):
                 if button.text() == "复制错误详情":
                     button.click()
 
-        with patch("runtime._bridge", bridge), patch("app.transfer", side_effect=RuntimeError("injected archive failure")), patch.object(QMessageBox, "exec", inspect_box):
+        with patch("runtime._bridge", bridge), patch("tasks.transfer", side_effect=RuntimeError("injected archive failure")), patch.object(QMessageBox, "exec", inspect_box):
             FileWorker(self.base / "source", self.root, self.root, "copy").run()
             APP.processEvents()
         self.assertIn("injected archive failure", details[0])
@@ -136,6 +137,94 @@ class ImprovementTests(unittest.TestCase):
             window.close()
         wait_worker(window.worker)
         self.assertFalse(window.isVisible())
+
+    def prepare_batch(self):
+        from inbox import build_inbox
+        create_plan(self.root, "秋季", ["数学"])
+        paths = []
+        for index in range(20):
+            folder = self.base / f"source{index}"
+            folder.mkdir()
+            name = "未知.pdf" if index >= 18 else f"数学-课件-{index if index >= 9 else index // 3}.pdf"
+            source = folder / name
+            source.write_text(str(index))
+            paths.append(source)
+        items = build_inbox(paths, ["秋季/数学"], {"秋季/数学": ["课件", "其他"]})
+        for item in items:
+            item.course, item.category = item.suggested_course, item.suggested_category
+        return items
+
+    def run_batch(self, items, **kwargs):
+        from tasks import BatchWorker
+        results, summaries = [], []
+        worker = BatchWorker(items, self.root, **kwargs)
+        worker.item_done.connect(lambda i, result: results.append((i, result)))
+        worker.completed.connect(summaries.append)
+        worker.start()
+        wait_worker(worker)
+        return results, summaries[0]
+
+    def test_batch_twenty_and_unmatched(self):
+        items = self.prepare_batch()
+        results, summary = self.run_batch(items)
+        self.assertEqual(summary, {"ok": 18, "skipped": 2, "failed": 0})
+        self.assertIn("(2)", results[2][1]["target"])
+        for index, result in results:
+            self.assertTrue(items[index].source.exists())
+            if result["status"] == "ok":
+                self.assertEqual(Path(result["target"]).read_bytes(), items[index].source.read_bytes())
+        self.assertEqual(len(list(self.root.rglob("*.pdf"))), 18)
+
+    def test_batch_cancel_and_all_fail_retry(self):
+        from tasks import BatchWorker
+        from file_ops import transfer
+        items = self.prepare_batch()
+        worker = BatchWorker(items, self.root)
+        results = []
+        worker.item_done.connect(lambda i, r: results.append(r))
+
+        def cancel_after_first(*args, **kwargs):
+            target = transfer(*args, **kwargs)
+            worker.request_cancel()
+            return target
+
+        with patch("tasks.transfer", side_effect=cancel_after_first):
+            worker.start()
+            wait_worker(worker)
+        self.assertEqual([r["status"] for r in results], ["ok"] + ["skipped"] * 19)
+        self.assertFalse(list(self.root.rglob(".courseshelf-partial-*")))
+        for item in items:
+            self.assertTrue(item.source.exists())
+            item.course, item.category = "秋季/数学", "课件"
+        with patch("tasks.transfer", side_effect=PermissionError("read-only target")):
+            _, summary = self.run_batch(items)
+        self.assertEqual(summary["failed"], 20)
+        _, summary = self.run_batch(items)
+        self.assertEqual(summary["ok"], 20)
+
+    def test_inbox_folder_expansion_and_ui(self):
+        from inbox import build_inbox
+        items = self.prepare_batch()
+        folder = self.base / "incoming"
+        folder.mkdir()
+        (folder / "数学课件.txt").write_text("a")
+        (folder / "sub").mkdir()
+        (folder / "sub/数学作业.txt").write_text("b")
+        snapshot = {"秋季/数学": ["课件", "作业"]}
+        self.assertEqual(len(build_inbox([folder], list(snapshot), snapshot)), 1)
+        self.assertEqual(len(build_inbox([folder], list(snapshot), snapshot, recursive=True)), 2)
+        window = MainWindow()
+        window.root_edit.setText(str(self.root))
+        window.root_changed()
+        window.add_to_inbox([item.source for item in items])
+        self.assertEqual(window.inbox_table.rowCount(), 20)
+        self.assertTrue(all(item.course is None for item in window.inbox_items))
+        window.apply_suggestions()
+        window.archive_file()
+        wait_worker(window.file_worker)
+        self.assertIn("跳过 2", window.archive_status.text())
+        self.assertEqual(sum(item.status == "ok" for item in window.inbox_items), 18)
+        window.close()
 
 
 if __name__ == "__main__":

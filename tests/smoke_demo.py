@@ -125,6 +125,10 @@ def main():
     assert window.archive_status.text().startswith("复制成功"), window.archive_status.text()
     app.processEvents()
     assert window.grab().save(str(work / "ui-copy-after.png"))
+    # A second explicit enqueue exercises same-name protection in the unified inbox.
+    window.add_to_inbox([source], replace=True)
+    window.course_combo.setCurrentText("通信原理")
+    window.category_combo.setCurrentText("课件")
     window.archive_file()
     loop = QEventLoop()
     window.file_worker.finished.connect(loop.quit)
