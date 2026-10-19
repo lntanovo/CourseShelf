@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import uuid
 from pathlib import Path
 from typing import Callable
+
+log = logging.getLogger("courseshelf")
 
 
 class Cancelled(Exception):
@@ -35,6 +38,7 @@ def transfer(
     cancelled: Callable[[], bool] | None = None,
 ) -> Path:
     source, destination_dir, root = map(Path, (source, destination_dir, root))
+    log.info("transfer_start src=%s dst=%s mode=%s", source, destination_dir, mode)
     if mode not in {"copy", "move"}:
         raise ValueError("操作方式只能是复制或移动")
     if not source.is_file() or source.is_symlink():
@@ -72,6 +76,7 @@ def transfer(
             raise OSError("目标大小或 SHA-256 校验失败")
         if cancelled and cancelled():
             raise Cancelled("操作已取消；来源文件保持不变")
+        log.info("transfer_verified src=%s size=%s sha256=%s", source, initial.st_size, digest.hexdigest())
         number = 0
         while True:
             filename = source.name if number == 0 else f"{source.stem} ({number}){source.suffix}"
@@ -91,6 +96,7 @@ def transfer(
                 raise PartialMoveError(target, exc) from exc
         if progress:
             progress(100)
+        log.info("transfer_complete src=%s dst=%s mode=%s", source, target, mode)
         return target
     finally:
         if not committed:

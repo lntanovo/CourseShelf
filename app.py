@@ -5,6 +5,9 @@ from __future__ import annotations
 import os
 import json
 import sys
+import subprocess
+import tempfile
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -24,6 +27,9 @@ from catalog import (add_category, count_contents, create_plan,
                      rename_category, restore_defaults, restore_missing, trash_category)
 from classifier import suggest
 from file_ops import Cancelled, PartialMoveError, transfer
+from runtime import (acquire_instance, configure_logging, install_exception_hooks, log,
+                     open_with_shell, report_exception)
+from dialogs import confirm
 
 
 class OcrWorker(QThread):
@@ -33,11 +39,41 @@ class OcrWorker(QThread):
     def __init__(self, image: Path):
         super().__init__()
         self.image = image
+        self.cancel_requested = False
+
+    def request_cancel(self):
+        self.cancel_requested = True
 
     def run(self):
         try:
-            self.completed.emit(local_ocr(self.image))
+            # An isolated process makes an in-flight ONNX call safely cancellable.
+            with tempfile.TemporaryDirectory(prefix="courseshelf-ocr-") as temporary:
+                output = Path(temporary) / "result.json"
+                command = [sys.executable]
+                if not getattr(sys, "frozen", False):
+                    command.append(str(Path(__file__).resolve()))
+                command.extend(["--verify-ocr", str(self.image), str(output)])
+                process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                try:
+                    while process.poll() is None:
+                        if self.cancel_requested:
+                            raise Cancelled("识别已取消，原课程列表保留")
+                        threading.Event().wait(0.04)
+                    if self.cancel_requested:
+                        raise Cancelled("识别已取消，原课程列表保留")
+                    result = json.loads(output.read_text(encoding="utf-8"))
+                    if process.returncode or "error" in result:
+                        raise RuntimeError(result.get("error", "OCR 子进程失败"))
+                    self.completed.emit(result["lines"])
+                finally:
+                    if process.poll() is None:
+                        process.terminate()
+                    process.wait()
+        except Cancelled as exc:
+            self.failed.emit(str(exc))
         except Exception as exc:
+            log.exception("ocr_failed image=%s", self.image)
             self.failed.emit(str(exc))
 
 
@@ -153,6 +189,10 @@ class FileWorker(QThread):
                               progress=self.progress.emit, cancelled=lambda: self.cancel_requested)
             self.completed.emit(str(target))
         except (OSError, ValueError, Cancelled, PartialMoveError) as exc:
+            log.exception("file_failed source=%s", self.source)
+            self.failed.emit(str(exc))
+        except Exception as exc:
+            report_exception(*sys.exc_info())
             self.failed.emit(str(exc))
 
 
@@ -559,6 +599,7 @@ class MainWindow(QMainWindow):
             self.missing_combo.clear()
             return
         root = root.resolve()
+        log.info("root_changed root=%s", root)
         if self.root_edit.text() != str(root):
             self.root_edit.setText(str(root))
         if save:
@@ -579,7 +620,7 @@ class MainWindow(QMainWindow):
         if root is None:
             self.root_status.setText("无法打开：资料总目录不存在，请重新选择。")
             return
-        os.startfile(root)
+        open_with_shell(root, self.statusBar().showMessage)
 
     def refresh_browser(self, *_args, preferred: str | None = None, remember: bool = True):
         root = self.root_path()
@@ -682,7 +723,7 @@ class MainWindow(QMainWindow):
 
     def open_current_folder(self):
         if self.current_directory and self.current_directory.is_dir():
-            os.startfile(self.current_directory)
+            open_with_shell(self.current_directory, self.statusBar().showMessage)
         else:
             self.browser_path_label.setText("没有可打开的目录，请先选择资料总目录。")
 
@@ -691,7 +732,7 @@ class MainWindow(QMainWindow):
         if item:
             path = Path(item.data(Qt.ItemDataRole.UserRole))
             if path.is_file():
-                os.startfile(path)
+                open_with_shell(path, self.statusBar().showMessage)
 
     def choose_image(self):
         selected, _ = QFileDialog.getOpenFileName(self, "选择课表图片", "", "图片 (*.png *.jpg *.jpeg)")
@@ -707,7 +748,7 @@ class MainWindow(QMainWindow):
             self.ocr_status.setText("图片无法解码；原图片和课程保留。")
             return False
         if self.image_path != path and self.courses_list.count() and QMessageBox.question(
-                self, "替换课表图片", "已有课程列表。换图后原列表仍保留，开始重新识别时会清空。继续换图？") != QMessageBox.StandardButton.Yes:
+                self, "替换课表图片", "已有课程列表。换图后原列表仍保留，开始重新识别时会清空。继续换图？", defaultButton=QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
             return False
         self.image_path = path
         self.image_label.setText(str(path))
@@ -722,7 +763,7 @@ class MainWindow(QMainWindow):
             self.ocr_status.setText("请先选择存在的课表图片。")
             return
         if self.courses_list.count() and QMessageBox.question(
-                self, "重新识别", "重新识别将替换已核对或手工修改的课程列表，继续？") != QMessageBox.StandardButton.Yes:
+                self, "重新识别", "重新识别将替换已核对或手工修改的课程列表，继续？", defaultButton=QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
             return
         self.ocr_button.setEnabled(False)
         self.ocr_progress.setRange(0, 0)
@@ -952,6 +993,9 @@ class MainWindow(QMainWindow):
     def archive_file(self):
         destination = self.target_directory()
         try:
+            from catalog import writable_catalog
+            if self.root_path():
+                writable_catalog(self.root_path())
             if not self.source_edit.text().strip():
                 raise ValueError("请先选择来源文件")
             if destination is None:
@@ -1087,14 +1131,14 @@ class MainWindow(QMainWindow):
             path = root / semester / course
             names = disk_categories(root, semester, course)
             preview = "\n".join("  • " + str(path / name) for name in names) or "  （当前没有分类子目录）"
-            if QMessageBox.question(self, "纳入管理", f"登记现有课程及以下分类？\n{path}\n{preview}\n不会修改已有文件。") == QMessageBox.StandardButton.Yes:
+            if QMessageBox.question(self, "纳入管理", f"登记现有课程及以下分类？\n{path}\n{preview}\n不会修改已有文件。", defaultButton=QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
                 import_course(root, semester, course)
         self._category_action(action)
 
     def add_category_ui(self):
         def action(root, semester, course):
             name, ok = QInputDialog.getText(self, "添加分类", "分类名称")
-            if ok and name.strip() and QMessageBox.question(self, "确认创建", "创建目录：\n" + str(root / semester / course / name.strip())) == QMessageBox.StandardButton.Yes:
+            if ok and name.strip() and QMessageBox.question(self, "确认创建", "创建目录：\n" + str(root / semester / course / name.strip()), defaultButton=QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
                 add_category(root, semester, course, name)
         self._category_action(action)
 
@@ -1104,7 +1148,7 @@ class MainWindow(QMainWindow):
             if old is None:
                 raise ValueError("请先选择一个分类")
             name, ok = QInputDialog.getText(self, "重命名分类", "新名称", text=old.text())
-            if ok and name.strip() and QMessageBox.question(self, "确认重命名", f"{root / semester / course / old.text()}\n→ {root / semester / course / name.strip()}") == QMessageBox.StandardButton.Yes:
+            if ok and name.strip() and QMessageBox.question(self, "确认重命名", f"{root / semester / course / old.text()}\n→ {root / semester / course / name.strip()}", defaultButton=QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
                 rename_category(root, semester, course, old.text(), name)
         self._category_action(action)
 
@@ -1115,13 +1159,13 @@ class MainWindow(QMainWindow):
                 raise ValueError("请先选择一个分类")
             path = root / semester / course / item.text()
             files, dirs = count_contents(path)
-            if QMessageBox.question(self, "移至回收站", f"将整个分类目录移至 Windows 回收站？\n{path}\n包含 {files} 个文件、{dirs} 个子目录。") == QMessageBox.StandardButton.Yes:
+            if confirm(self, "移至回收站", f"将整个分类目录移至 Windows 回收站？\n{path}\n包含 {files} 个文件、{dirs} 个子目录。"):
                 trash_category(root, semester, course, item.text())
         self._category_action(action)
 
     def restore_defaults_ui(self):
         def action(root, semester, course):
-            if QMessageBox.question(self, "恢复默认分类", f"在 {root / semester / course} 下补建缺失的默认分类？") == QMessageBox.StandardButton.Yes:
+            if confirm(self, "恢复默认分类", f"在 {root / semester / course} 下补建缺失的默认分类？"):
                 restore_defaults(root, semester, course)
         self._category_action(action)
 
@@ -1131,6 +1175,11 @@ class MainWindow(QMainWindow):
         if root is None:
             return
         try:
+            from catalog import load_catalog
+            data = load_catalog(root)
+            if data.get("_read_only"):
+                self.missing_label.setText(data["_warning"])
+                return
             missing = missing_paths(root)
         except (OSError, ValueError) as exc:
             self.missing_label.setText("管理记录不可读取；仍可浏览磁盘文件：" + str(exc))
@@ -1148,7 +1197,7 @@ class MainWindow(QMainWindow):
         try:
             ancestors = [p for p in reversed(path.parents) if p != root and p.is_relative_to(root) and not p.is_dir()]
             preview = "\n".join(str(p) for p in [*ancestors, path])
-            if QMessageBox.question(self, "重建空目录", "只重建文件夹，不恢复其中丢失的文件：\n" + preview) == QMessageBox.StandardButton.Yes:
+            if QMessageBox.question(self, "重建空目录", "只重建文件夹，不恢复其中丢失的文件：\n" + preview, defaultButton=QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
                 restore_missing(root, path)
                 self.refresh_browser()
         except (OSError, ValueError) as exc:
@@ -1157,17 +1206,25 @@ class MainWindow(QMainWindow):
     def open_destination(self):
         path = self.target_directory() or self.last_target
         if path and path.is_dir():
-            os.startfile(path)
+            open_with_shell(path, self.statusBar().showMessage)
         else:
             self.archive_status.setText("目标分类文件夹不存在，请先生成目录。")
 
     def closeEvent(self, event):
-        if ((self.worker is not None and self.worker.isRunning()) or
-                (self.file_worker is not None and self.file_worker.isRunning())):
-            self.statusBar().showMessage("后台任务正在完成，请稍后关闭窗口。")
+        workers = [worker for worker in (self.worker, self.file_worker)
+                   if worker is not None and worker.isRunning()]
+        if workers:
+            if not getattr(self, "_closing", False) and not confirm(self, "退出 CourseShelf", "取消后台任务并退出？已完成的文件会保留。", "取消任务并退出"):
+                event.ignore()
+                return
+            for worker in workers:
+                worker.cancel_requested = True
+            self._closing = True
+            for worker in workers:
+                worker.finished.connect(self.close)
             event.ignore()
-        else:
-            super().closeEvent(event)
+            return
+        super().closeEvent(event)
 
 
 STYLE = """
@@ -1207,7 +1264,7 @@ def main():
         output = Path(sys.argv[3])
         try:
             lines = local_ocr(Path(sys.argv[2]))
-            output.write_text(json.dumps({"courses": extract_candidates(lines)}, ensure_ascii=False), encoding="utf-8")
+            output.write_text(json.dumps({"courses": extract_candidates(lines), "lines": lines}, ensure_ascii=False), encoding="utf-8")
             return 0
         except Exception as exc:
             output.write_text(json.dumps({"error": str(exc)}, ensure_ascii=False), encoding="utf-8")
@@ -1225,6 +1282,11 @@ def main():
             output.write_text(json.dumps({"error": str(exc)}, ensure_ascii=False), encoding="utf-8")
             return 1
     app = QApplication(sys.argv)
+    configure_logging()
+    install_exception_hooks()
+    instance_lock = acquire_instance()
+    if instance_lock is None:
+        return 0
     window = MainWindow()
     window.show()
     return app.exec()

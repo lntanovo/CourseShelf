@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import tempfile
@@ -15,6 +16,7 @@ from organizer import CATEGORIES, build_plan, safe_name
 
 CATALOG_NAME = ".courseshelf.json"
 SCHEMA_VERSION = 1
+log = logging.getLogger("courseshelf")
 
 
 class CatalogError(ValueError):
@@ -50,14 +52,54 @@ def catalog_path(root: Path) -> Path:
 
 def load_catalog(root: Path) -> dict:
     path = catalog_path(root)
+    if path.is_symlink():
+        return _read_only("管理记录不能是符号链接")
     if not path.exists():
         return {"schema_version": SCHEMA_VERSION, "courses": {}}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        raise CatalogError(f"管理记录不可读取：{exc}") from exc
-    if not isinstance(data, dict) or data.get("schema_version") != SCHEMA_VERSION or not isinstance(data.get("courses"), dict):
-        raise CatalogError("管理记录版本不受支持或格式不正确；仍可浏览磁盘文件")
+        return _read_only(f"管理记录不可读取：{exc}")
+    try:
+        version = data.get("schema_version") if isinstance(data, dict) else None
+        if not isinstance(version, int) or version < 1:
+            raise CatalogError("管理记录版本或格式不正确")
+        if version > SCHEMA_VERSION:
+            return _read_only("该资料目录由更新版本的 CourseShelf 创建")
+        _validate(data)
+        if version < SCHEMA_VERSION:
+            migrated = _migrate(data, version)
+            _validate(migrated)
+            _atomic_save(root, migrated)
+            data = migrated
+        return data
+    except (OSError, ValueError, TypeError) as exc:
+        log.exception("catalog_read_only path=%s", path)
+        return _read_only("管理记录迁移或校验失败：" + str(exc))
+
+
+def _read_only(warning):
+    return {"schema_version": SCHEMA_VERSION, "courses": {}, "_read_only": True,
+            "_warning": warning + "；仅浏览磁盘，管理操作已禁用"}
+
+
+def _migrate(data, from_version):
+    # New migrations are appended here; never mutate the input before validation.
+    result = json.loads(json.dumps(data))
+    while from_version < SCHEMA_VERSION:
+        if from_version == 1:
+            for record in result["courses"].values():
+                record.setdefault("aliases", [])
+            from_version = 2
+        else:
+            raise CatalogError("没有可用的清单迁移路径")
+    result["schema_version"] = from_version
+    return result
+
+
+def _validate(data):
+    if not isinstance(data.get("courses"), dict):
+        raise CatalogError("管理记录课程格式不正确")
     for key, record in data["courses"].items():
         _parts(key)
         if not isinstance(record, dict) or not isinstance(record.get("categories"), list):
@@ -67,10 +109,24 @@ def load_catalog(root: Path) -> dict:
             raise CatalogError(f"管理记录含无效分类名称：{key}")
         if len({name.casefold() for name in categories}) != len(categories):
             raise CatalogError(f"管理记录含重复分类：{key}")
+
+
+def writable_catalog(root):
+    data = load_catalog(root)
+    if data.get("_read_only"):
+        raise CatalogError(data["_warning"])
     return data
 
 
 def save_catalog(root: Path, data: dict) -> None:
+    writable_catalog(root)
+    if data.get("_read_only"):
+        raise CatalogError(data["_warning"])
+    _validate(data)
+    _atomic_save(root, data)
+
+
+def _atomic_save(root: Path, data: dict) -> None:
     root = _root(root)
     path = root / CATALOG_NAME
     if path.is_file():
@@ -132,6 +188,7 @@ def plan_paths(root: Path, semester: str, courses: list[str]) -> tuple[Path, lis
 
 
 def create_plan(root: Path, semester: str, courses: list[str]) -> tuple[int, int, list[str], Path]:
+    data = writable_catalog(root)
     semester_path, items, paths = plan_paths(root, semester, courses)
     previously_existing = {course_path for course_path, _ in items if course_path.is_dir()}
     created = existing = 0
@@ -149,24 +206,29 @@ def create_plan(root: Path, semester: str, courses: list[str]) -> tuple[int, int
                 created += 1
         except (OSError, CatalogError) as exc:
             failures.append(f"{path}: {exc}")
-    if not failures:
-        data = load_catalog(root)
-        for course_path, categories in items:
-            key = _key(semester_path.name, course_path.name)
-            if course_path not in previously_existing or key in data["courses"]:
-                data["courses"].setdefault(key, {"categories": list(categories)})
-        save_catalog(root, data)
+    for course_path, categories in items:
+        key = _key(semester_path.name, course_path.name)
+        if course_path.is_dir() and not course_path.is_symlink() and (course_path not in previously_existing or key in data["courses"]):
+            succeeded = [name for name in categories if (course_path / name).is_dir()
+                         and not (course_path / name).is_symlink()]
+            record = data["courses"].setdefault(key, {"categories": []})
+            record["categories"].extend(name for name in succeeded if name not in record["categories"])
+    save_catalog(root, data)
+    log.info("create_plan root=%s created=%s existing=%s failures=%s", root, created, existing, failures)
     return created, existing, failures, semester_path
 
 
 def import_course(root: Path, semester: str, course: str) -> None:
     categories = disk_categories(root, semester, course)
-    data = load_catalog(root)
-    data["courses"][_key(semester, course)] = {"categories": categories}
+    data = writable_catalog(root)
+    record = data["courses"].setdefault(_key(semester, course), {"categories": []})
+    record["categories"] = [name for name in record["categories"] if name in categories]
+    record["categories"].extend(name for name in categories if name not in record["categories"])
     save_catalog(root, data)
 
 
 def _checked_category(root: Path, semester: str, course: str, category: str) -> Path:
+    writable_catalog(root)
     if not is_managed(root, semester, course):
         raise CatalogError("请先将课程目录纳入管理")
     return _folder(root, semester, course, category)
@@ -179,7 +241,7 @@ def add_category(root: Path, semester: str, course: str, value: str) -> Path:
         raise CatalogError("分类名称含 Windows 不允许的字符，请修改")
     if any(p.name.casefold() == name.casefold() for p in course_path.iterdir()):
         raise CatalogError("同名分类或文件已存在")
-    data = load_catalog(root)
+    data = writable_catalog(root)
     record = data["courses"].get(_key(semester, course))
     if record is None:
         raise CatalogError("请先将课程目录纳入管理")
@@ -200,7 +262,7 @@ def rename_category(root: Path, semester: str, course: str, old: str, value: str
     destination = source.parent / name
     if any(p.name.casefold() == name.casefold() and p.name.casefold() != old.casefold() for p in source.parent.iterdir()):
         raise CatalogError("目标分类或文件已存在")
-    data = load_catalog(root)
+    data = writable_catalog(root)
     record = data["courses"][_key(semester, course)]
     if old not in record["categories"]:
         raise CatalogError("该分类尚未纳入管理")
@@ -229,32 +291,38 @@ def count_contents(folder: Path) -> tuple[int, int]:
 
 def trash_category(root: Path, semester: str, course: str, category: str) -> None:
     path = _checked_category(root, semester, course, category)
-    data = load_catalog(root)
+    data = writable_catalog(root)
     record = data["courses"][_key(semester, course)]
     if category not in record["categories"]:
         raise CatalogError("该分类尚未纳入管理")
     send2trash(str(path))  # Never fall back to permanent recursive deletion.
+    log.info("trash_category path=%s", path)
     record["categories"].remove(category)
     save_catalog(root, data)
 
 
 def restore_defaults(root: Path, semester: str, course: str) -> list[Path]:
     _folder(root, semester, course)
-    data = load_catalog(root)
+    data = writable_catalog(root)
     record = data["courses"].get(_key(semester, course))
     if record is None:
         raise CatalogError("请先将课程目录纳入管理")
-    created = []
+    created, failures = [], []
     for name in CATEGORIES:
-        path = _folder(root, semester, course, name, must_exist=False)
-        if path.is_symlink() or (path.exists() and not path.is_dir()):
-            raise CatalogError("默认分类被同名文件阻挡：" + str(path))
-        if not path.exists():
-            path.mkdir()
-            created.append(path)
-        if name not in record["categories"]:
-            record["categories"].append(name)
+        try:
+            path = _folder(root, semester, course, name, must_exist=False)
+            if path.exists() and not path.is_dir():
+                raise CatalogError("默认分类被同名文件阻挡：" + str(path))
+            if not path.exists():
+                path.mkdir()
+                created.append(path)
+            if name not in record["categories"]:
+                record["categories"].append(name)
+        except (OSError, ValueError) as exc:
+            failures.append(str(exc))
     save_catalog(root, data)
+    if failures:
+        raise CatalogError("其余默认分类已登记；失败项：\n" + "\n".join(failures))
     return created
 
 
@@ -276,6 +344,7 @@ def missing_paths(root: Path) -> list[Path]:
 
 
 def restore_missing(root: Path, path: Path) -> list[Path]:
+    writable_catalog(root)
     root = _root(root)
     expected = set(managed_paths(root))
     path = Path(path)
@@ -291,4 +360,5 @@ def restore_missing(root: Path, path: Path) -> list[Path]:
         current = current.parent
     for folder in reversed(missing):
         folder.mkdir()
+    log.info("restore_missing path=%s created=%s", path, len(missing))
     return list(reversed(missing))

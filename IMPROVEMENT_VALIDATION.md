@@ -1,0 +1,40 @@
+# CourseShelf 本轮实施与验收
+
+日期：2026-10-19。所有测试数据使用系统临时目录；未读取或改写私人课表。
+
+## M0 基线（已通过）
+
+实际命令（项目根目录 PowerShell）：
+
+```powershell
+.\.venv\Scripts\python.exe -m py_compile app.py organizer.py catalog.py classifier.py file_ops.py uninstaller.py
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p test_optimization.py -v
+.\.venv\Scripts\python.exe tests\smoke_demo.py
+.\build.ps1
+.\tests\packed_acceptance.ps1 -UseFictionalSample
+```
+
+结果：语法退出 0，6/6 测试通过，虚构课表 OCR 9/9（socket 拦截），46 个目录首次创建、二次全部复用；复制保留源，同名加序号；重启恢复路径。未复现旧审计的 ACL 问题。
+
+打包后原始输出：
+
+```text
+Relocated exe OCR: 9 courses
+Relocated exe archive: test file copied into user library; source retained
+Relocated GUI app opened: PID 4788
+Relocated uninstall: 310 owned files removed; user material and empty folder preserved
+```
+
+发布基线：403039388 bytes（384.37 MiB）。完整输出保存在 `artifacts/improvement/m0-*.log`。
+
+## 验收冲突裁决
+
+- B11 的覆盖选项违反 §7.2，省略覆盖，仅提供保留两个与跳过。
+- B13 的撤销删除仅对本应用有成功记录且大小、SHA-256 均匹配的目标执行，并只送入回收站。
+- U02 对未受管用户文件的重命名、删除违反 §7.3；仅允许打开、定位和复制路径。
+- 删除索引可重建的是文件缓存；持久操作历史不属于可重建缓存，单独保存，避免删索引丢撤销依据。
+
+## M1 止血（通过）
+
+执行 tests/verify_milestone.ps1 -Milestone m1（语法 → 10 项单元/回归 → 离线冒烟 → build.ps1 → 搬移打包验收）。全部通过，日志见 artifacts/improvement/m1-*.log。注入归档 RuntimeError 后日志含 traceback，弹窗详情可复制；OCR 关闭可取消且无存活线程。清单版本迁移入口已建立，v1→v2 在 M5 启用。
+
