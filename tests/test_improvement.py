@@ -108,7 +108,7 @@ class ImprovementTests(unittest.TestCase):
                 if button.text() == "复制错误详情":
                     button.click()
 
-        with patch("runtime._bridge", bridge), patch("tasks.transfer", side_effect=RuntimeError("injected archive failure")), patch.object(QMessageBox, "exec", inspect_box):
+        with patch("runtime._bridge", bridge), patch("tasks.worker.transfer", side_effect=RuntimeError("injected archive failure")), patch.object(QMessageBox, "exec", inspect_box):
             FileWorker(self.base / "source", self.root, self.root, "copy").run()
             APP.processEvents()
         self.assertIn("injected archive failure", details[0])
@@ -133,7 +133,7 @@ class ImprovementTests(unittest.TestCase):
         window.set_image(image)
         window.show()
         window.start_ocr()
-        with patch("app.confirm", return_value=True):
+        with patch("ui.root.confirm", return_value=True):
             window.close()
         wait_worker(window.worker)
         self.assertFalse(window.isVisible())
@@ -188,7 +188,7 @@ class ImprovementTests(unittest.TestCase):
             worker.request_cancel()
             return target
 
-        with patch("tasks.transfer", side_effect=cancel_after_first):
+        with patch("tasks.worker.transfer", side_effect=cancel_after_first):
             worker.start()
             wait_worker(worker)
         self.assertEqual([r["status"] for r in results], ["ok"] + ["skipped"] * 19)
@@ -197,7 +197,7 @@ class ImprovementTests(unittest.TestCase):
             self.assertTrue(item.source.exists())
             item.course, item.category = "秋季/数学", "课件"
             item.source.write_text(f"retry-{index}")
-        with patch("tasks.transfer", side_effect=PermissionError("read-only target")):
+        with patch("tasks.worker.transfer", side_effect=PermissionError("read-only target")):
             _, summary = self.run_batch(items)
         self.assertEqual(summary["failed"], 20)
         _, summary = self.run_batch(items)
