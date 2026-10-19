@@ -39,6 +39,15 @@ from ui.widgets import DropFileEdit, ImageDropZone, FileDropTree
 
 class BrowserMixin:
     def _make_browser(self) -> QWidget:
+        self._directory_workers = []
+        self._tree_epoch = self._files_epoch = 0
+        self._tree_loaded = set()
+        self._tree_pending = set()
+        self._refresh_scheduled = False
+        self.view_settings_timer = QTimer(self)
+        self.view_settings_timer.setSingleShot(True)
+        self.view_settings_timer.setInterval(350)
+        self.view_settings_timer.timeout.connect(self.flush_view_settings)
         card, layout = self._card("资料浏览 · 磁盘上的真实文件")
         card.setMinimumWidth(460)
         row = QHBoxLayout()
@@ -70,6 +79,7 @@ class BrowserMixin:
         tree_layout.addWidget(QLabel("文件夹 · 学期 → 课程 → 分类"))
         self.folder_tree = FileDropTree()
         self.folder_tree.setHeaderHidden(True)
+        self.folder_tree.itemExpanded.connect(self.expand_tree_item)
         self.folder_tree.currentItemChanged.connect(self.on_tree_selected)
         self.folder_tree.file_on_item.connect(self.file_dropped_on_tree)
         self.folder_tree.rejected.connect(self.statusBar().showMessage)
@@ -103,6 +113,7 @@ class BrowserMixin:
         self.files_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.files_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.files_table.setAlternatingRowColors(True)
+        self.files_table.horizontalHeader().setResizeContentsPrecision(50)
         self.files_table.verticalHeader().setVisible(False)
         self.files_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.files_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
@@ -113,7 +124,16 @@ class BrowserMixin:
         panes.setSizes([320, 270])
         return card
 
-    def refresh_browser(self, *_args, preferred: str | None = None, remember: bool = True):
+    def refresh_browser(self, *_args, preferred=None, remember=True):
+        from catalog import catalog_snapshot
+        root = self.root_path()
+        if root is None:
+            self.root_changed(save=False)
+            return
+        with catalog_snapshot(root):
+            self._refresh_browser(preferred=preferred, remember=remember)
+
+    def _refresh_browser(self, preferred=None, remember=True):
         root = self.root_path()
         if root is None:
             self.root_changed(save=False)
@@ -131,7 +151,6 @@ class BrowserMixin:
             self.browser_path_label.setText("上次查看的目录已失效，已返回资料总目录：" + str(root))
         self.refresh_missing()
         self.refresh_targets()
-        self.refresh_manage_categories()
 
         self.start_index_scan()
         self.refresh_history()
@@ -185,33 +204,80 @@ class BrowserMixin:
             self.index_status.setText("索引不可用，正在重建：" + str(exc))
             self.start_index_scan()
 
-    def _load_tree(self, root: Path):
+    def _load_tree(self, root):
+        self._tree_epoch += 1
+        self._tree_loaded = set()
+        self._tree_pending = set()
         self.folder_tree.blockSignals(True)
         self.folder_tree.clear()
         self.tree_items.clear()
-
-        def append_folders(parent_item: QTreeWidgetItem | None, parent_path: Path, depth: int):
-            if depth > 2:
-                return
-            try:
-                children = sorted((p for p in parent_path.iterdir() if p.is_dir() and not p.is_symlink()), key=lambda p: p.name.casefold())
-            except OSError as exc:
-                self.browser_path_label.setText("目录树读取失败：" + str(exc))
-                return
-            for child in children:
-                item = QTreeWidgetItem([child.name])
-                item.setData(0, Qt.ItemDataRole.UserRole, str(child))
-                if parent_item is None:
-                    self.folder_tree.addTopLevelItem(item)
-                else:
-                    parent_item.addChild(item)
-                self.tree_items[child] = item
-                append_folders(item, child, depth + 1)
-
-        append_folders(None, root, 0)
+        self._populate_tree(root)
         self.folder_tree.blockSignals(False)
 
-    def _select_tree_path(self, path: Path):
+    def _directory_job(self, directory, callback):
+        from tasks import DirectoryWorker
+        worker = DirectoryWorker(self.root_path(), directory)
+        self._directory_workers.append(worker)
+        worker.completed.connect(callback)
+        worker.failed.connect(lambda error: self.browser_path_label.setText("目录读取失败：" + error))
+        worker.finished.connect(lambda w=worker: self._directory_stopped(w))
+        worker.start()
+
+    def _directory_stopped(self, worker):
+        if worker in self._directory_workers:
+            self._directory_workers.remove(worker)
+        worker.deleteLater()
+
+    def _populate_tree(self, directory):
+        from services.browser import read_directory
+        if directory in self._tree_loaded or directory in self._tree_pending:
+            return
+        epoch = self._tree_epoch
+        def apply(snapshot):
+            if epoch != self._tree_epoch or getattr(self, "_closing", False):
+                return
+            self._tree_pending.discard(directory)
+            self._tree_loaded.add(directory)
+            folders = snapshot["folders"]
+            def chunk(start=0):
+                if epoch != self._tree_epoch or getattr(self, "_closing", False):
+                    return
+                parent = self.tree_items.get(directory)
+                for path in folders[start:start + 64]:
+                    if path in self.tree_items:
+                        continue
+                    item = QTreeWidgetItem([path.name])
+                    item.setData(0, Qt.ItemDataRole.UserRole, str(path))
+                    item.setChildIndicatorPolicy(QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator)
+                    if parent is None:
+                        self.folder_tree.addTopLevelItem(item)
+                    else:
+                        parent.addChild(item)
+                    self.tree_items[path] = item
+                if start + 64 < len(folders):
+                    QTimer.singleShot(0, lambda: chunk(start + 64))
+            chunk()
+        try:
+            snapshot = read_directory(self.root_path(), directory, limit=64)
+            if snapshot is None:
+                self._tree_pending.add(directory)
+                self._directory_job(directory, apply)
+            else:
+                apply(snapshot)
+        except (OSError, ValueError) as exc:
+            self.browser_path_label.setText("目录树读取失败：" + str(exc))
+
+    def expand_tree_item(self, item):
+        self._populate_tree(Path(item.data(0, Qt.ItemDataRole.UserRole)))
+
+    def _select_tree_path(self, path):
+        root = self.root_path()
+        if root is None or not path.is_relative_to(root):
+            return
+        current = root
+        for part in path.relative_to(root).parts:
+            self._populate_tree(current)
+            current = current / part
         item = self.tree_items.get(path)
         if item is None:
             return
@@ -229,40 +295,69 @@ class BrowserMixin:
             self.show_files(Path(current.data(0, Qt.ItemDataRole.UserRole)))
             self.refresh_manage_categories()
 
-    def show_files(self, directory: Path, *, remember: bool = True):
+    def show_files(self, directory, *, remember=True):
+        from services.browser import read_directory
         root = self.root_path()
         if root is None:
             return
+        self._files_epoch += 1
+        epoch = self._files_epoch
         try:
-            if directory.is_symlink() or not directory.is_dir() or not directory.resolve().is_relative_to(root.resolve()):
-                raise ValueError("所选目录已失效或不在资料总目录内")
-            files = sorted((p for p in directory.iterdir() if p.is_file() and not p.is_symlink()), key=lambda p: p.name.casefold())
+            snapshot = read_directory(root, directory, limit=64)
         except (OSError, ValueError) as exc:
             self.browser_path_label.setText("目录读取失败：" + str(exc))
             self.files_table.setRowCount(0)
-            self.files_title.setText("文件 · 0 个")
             return
         self.current_directory = directory
         self.browser_path_label.setText(str(directory))
-        self.files_table.setRowCount(len(files))
-        for row, path in enumerate(files):
-            try:
-                stat = path.stat()
-                size = f"{stat.st_size:,} B"
-                modified = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M")
-            except OSError:
-                size, modified = "无法读取", "—"
-            name_item = QTableWidgetItem(path.name)
-            name_item.setData(Qt.ItemDataRole.UserRole, str(path))
-            self.files_table.setItem(row, 0, name_item)
-            self.files_table.setItem(row, 1, QTableWidgetItem(size))
-            self.files_table.setItem(row, 2, QTableWidgetItem(modified))
-        self.files_title.setText(f"文件 · {len(files)} 个")
+        self.files_table.setRowCount(0)
+        def apply(data):
+            if epoch != self._files_epoch or getattr(self, "_closing", False):
+                return
+            files = data["files"]
+            self.files_table.setRowCount(len(files))
+            self.files_title.setText(f"文件 · {len(files)} 个")
+            def chunk(start=0):
+                if epoch != self._files_epoch or getattr(self, "_closing", False):
+                    return
+                for row in range(start, min(start + 64, len(files))):
+                    path, size, modified = files[row]
+                    name = QTableWidgetItem(path.name)
+                    name.setData(Qt.ItemDataRole.UserRole, str(path))
+                    self.files_table.setItem(row, 0, name)
+                    self.files_table.setItem(row, 1, QTableWidgetItem(f"{size:,} B"))
+                    self.files_table.setItem(row, 2, QTableWidgetItem(datetime.fromtimestamp(modified).strftime("%Y-%m-%d %H:%M")))
+                if start + 64 < len(files):
+                    QTimer.singleShot(0, lambda: chunk(start + 64))
+            chunk()
+        if snapshot is None:
+            self.files_title.setText("正在后台读取文件…")
+            self._directory_job(directory, apply)
+        else:
+            apply(snapshot)
         if remember:
+            self._pending_view_settings = (root, directory)
+            self.view_settings_timer.start()
+
+    def flush_view_settings(self):
+        self.view_settings_timer.stop()
+        pending = getattr(self, "_pending_view_settings", None)
+        if pending:
+            self._pending_view_settings = None
             try:
-                save_settings(root, directory)
+                save_settings(*pending)
             except OSError as exc:
-                self.root_status.setText("文件可浏览，但位置记忆失败：" + str(exc))
+                self.root_status.setText("位置记忆失败：" + str(exc))
+
+    def request_refresh(self, **kwargs):
+        self._refresh_kwargs = kwargs
+        if not self._refresh_scheduled:
+            self._refresh_scheduled = True
+            QTimer.singleShot(0, self._run_scheduled_refresh)
+
+    def _run_scheduled_refresh(self):
+        self._refresh_scheduled = False
+        self.refresh_browser(**self._refresh_kwargs)
 
     def open_current_folder(self):
         if self.current_directory and self.current_directory.is_dir():

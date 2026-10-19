@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 from pathlib import Path
 
 CATEGORIES = ("课件", "作业", "复习资料", "其他")
@@ -88,26 +87,10 @@ def preview_paths(root: Path, semester: str, courses: list[str]) -> list[Path]:
     return [semester_path, *(path for _, course in items for path in (course, *(course / c for c in CATEGORIES)))]
 
 
-def create_directories(root: Path, semester: str, courses: list[str]) -> tuple[int, int, list[str]]:
-    paths = preview_paths(root, semester, courses)
-    created = existing = 0
-    failures: list[str] = []
-    for path in paths:
-        try:
-            if path.exists():
-                if not path.is_dir():
-                    raise NotADirectoryError("同名文件阻挡目录")
-                existing += 1
-            else:
-                path.mkdir(parents=True, exist_ok=True)
-                created += 1
-        except OSError as exc:
-            failures.append(f"{path}: {exc}")
-    return created, existing, failures
 
 
 def planned_copy_path(source: Path, destination_dir: Path) -> Path:
-    """Show the likely final name before copying; copy_unique still reserves it atomically."""
+    """Show the likely final name before copying; transfer reserves it atomically."""
     stem, suffix = source.stem, source.suffix
     number = 0
     while True:
@@ -118,26 +101,6 @@ def planned_copy_path(source: Path, destination_dir: Path) -> Path:
         number += 1
 
 
-def copy_unique(source: Path, destination_dir: Path) -> Path:
-    if not source.is_file() or source.is_symlink():
-        raise ValueError("请选择一个存在的普通文件")
-    if not destination_dir.is_dir():
-        raise ValueError("目标分类目录不存在，请先生成目录")
-    stem, suffix = source.stem, source.suffix
-    number = 0
-    while True:
-        filename = source.name if number == 0 else f"{stem} ({number}){suffix}"
-        destination = destination_dir / filename
-        try:
-            with source.open("rb") as src, destination.open("xb") as dst:
-                try:
-                    shutil.copyfileobj(src, dst)
-                except BaseException:
-                    destination.unlink(missing_ok=True)
-                    raise
-            return destination
-        except FileExistsError:
-            number += 1
 
 
 def extract_candidates(lines: list[str]) -> list[str]:

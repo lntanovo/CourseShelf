@@ -229,15 +229,36 @@ class GenerateMixin:
         self._category_action(action)
 
     def delete_category_ui(self):
-        def action(root, semester, course):
-            item = self.manage_categories.currentItem()
-            if item is None:
-                raise ValueError("请先选择一个分类")
-            path = root / semester / course / item.text()
-            files, dirs = count_contents(path)
-            if confirm(self, "移至回收站", f"将整个分类目录移至 Windows 回收站？\n{path}\n包含 {files} 个文件、{dirs} 个子目录。"):
-                trash_category(root, semester, course, item.text())
-        self._category_action(action)
+        from tasks import CountWorker
+        choice = self._managed_course()
+        item = self.manage_categories.currentItem()
+        if choice is None or item is None:
+            self.statusBar().showMessage("请先选择一个受管分类")
+            return
+        root, semester, course = choice
+        name = item.text()
+        path = root / semester / course / name
+        self.statusBar().showMessage("正在后台统计分类内容…")
+        worker = CountWorker(path)
+        self._directory_workers.append(worker)
+        worker.completed.connect(lambda counts: self.confirm_trash_category(choice, name, counts))
+        worker.failed.connect(self.statusBar().showMessage)
+        worker.finished.connect(lambda w=worker: self._directory_stopped(w))
+        worker.start()
+
+    def confirm_trash_category(self, choice, name, counts):
+        if getattr(self, "_closing", False):
+            return
+        root, semester, course = choice
+        files, directories = counts
+        path = root / semester / course / name
+        if confirm(self, "移至回收站", f"将整个分类目录移至回收站？\n{path}\n包含 {files} 个文件、{directories} 个子目录。"):
+            try:
+                trash_category(root, semester, course, name)
+                self.invalidate_preview()
+                self.request_refresh()
+            except (OSError, ValueError) as exc:
+                QMessageBox.warning(self, "分类操作失败", str(exc))
 
     def restore_defaults_ui(self):
         def action(root, semester, course):
@@ -251,8 +272,8 @@ class GenerateMixin:
         if root is None:
             return
         try:
-            from catalog import load_catalog
-            data = load_catalog(root)
+            from catalog import current_catalog
+            data = current_catalog(root)
             if data.get("_read_only"):
                 self.missing_label.setText(data["_warning"])
                 return

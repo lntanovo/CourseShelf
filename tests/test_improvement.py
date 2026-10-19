@@ -342,6 +342,44 @@ class ImprovementTests(unittest.TestCase):
             self.assertTrue(load_catalog(self.root)["_read_only"])
             self.assertEqual(path.read_bytes(), before)
 
+    def test_lazy_deep_tree_and_large_directory_responsiveness(self):
+        import catalog
+        create_plan(self.root, "秋季", ["数学"])
+        deep = self.root / "秋季/数学/课件/第一章/例题"
+        deep.mkdir(parents=True)
+        for index in range(5000):
+            (deep / f"file{index:04d}.txt").write_text("data")
+        window = MainWindow()
+        window.root_edit.setText(str(self.root))
+        window.root_changed()
+        wait_worker(window.scan_worker)
+        with patch.object(catalog, "load_catalog", wraps=catalog.load_catalog) as loader:
+            window.refresh_browser(preferred=str(deep))
+        self.assertEqual(loader.call_count, 1)
+        self.assertIn(deep, window.tree_items)
+        started = time.perf_counter()
+        window.show_files(deep)
+        self.assertLess(time.perf_counter() - started, 0.2)
+        gaps, last = [], [time.perf_counter()]
+        loop = QEventLoop()
+        timer = QTimer()
+        def tick():
+            current = time.perf_counter()
+            gaps.append(current - last[0])
+            last[0] = current
+            if window.files_table.rowCount() == 5000 and window.files_table.item(4999, 0) is not None:
+                loop.quit()
+        timer.timeout.connect(tick)
+        timer.start(10)
+        QTimer.singleShot(15000, loop.quit)
+        loop.exec()
+        timer.stop()
+        self.assertEqual(window.files_table.rowCount(), 5000)
+        self.assertIsNotNone(window.files_table.item(4999, 0))
+        self.assertLess(max(gaps), 0.2)
+        print(f"V14: 5000 files, maximum event-loop gap {max(gaps) * 1000:.1f} ms")
+        window.close()
+
 
 if __name__ == "__main__":
     unittest.main()

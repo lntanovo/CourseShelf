@@ -6,6 +6,12 @@ $python = Join-Path $project '.venv\Scripts\python.exe'
 $logs = Join-Path $project 'artifacts\improvement'
 New-Item -ItemType Directory -Path $logs -Force | Out-Null
 $sources = @(Get-ChildItem -LiteralPath $project -Filter '*.py' -File | ForEach-Object FullName)
+foreach ($package in @('services','ui','tasks')) {
+    $folder = Join-Path $project $package
+    if (Test-Path -LiteralPath $folder) {
+        $sources += @(Get-ChildItem -LiteralPath $folder -Filter '*.py' -File -Recurse | ForEach-Object FullName)
+    }
+}
 & $python -m py_compile @sources *> (Join-Path $logs "$Milestone-syntax.log")
 if ($LASTEXITCODE -ne 0) { throw 'Syntax failed' }
 & $python -m unittest discover -s tests -p 'test_*.py' -v *> (Join-Path $logs "$Milestone-unit.log")

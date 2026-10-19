@@ -58,3 +58,8 @@ Relocated uninstall: 310 owned files removed; user material and empty folder pre
 
 执行 tests/verify_milestone.ps1 -Milestone m5。18 项测试、离线冒烟、构建、搬移验收全通过。启用 schema 2，验证 v1 备份和分类顺序不变，迁移注入失败不改原清单。高数别名唯一命中；共享别名不选课；模糊匹配低置信，不自动应用。别名只通过明确编辑或一次性确认保存。原始输出 m5-*.log。
 
+
+## M6 架构与性能（通过）
+
+先以 M6a 独立提交纯搬运（18 项测试通过），再实施扫描改动。执行 tests/verify_milestone.ps1 -Milestone m6：19 项测试、冒烟、构建与搬移验收通过。MainWindow 175 行；services/ui/tasks 分层，根模块兼容导入。删除两套死代码。目录树懒加载无深度上限，大目录后台枚举、每批 64 行填充，分类统计后台完成。5000 文件最大事件循环间隔 26.5 ms（阈值 200 ms）；mock 断言一次刷新 load_catalog 只调用 1 次。路径设置延迟合并写入并在关闭时刷新。拒绝 UNC/映射网络根目录。原始日志 m6-*.log。
+

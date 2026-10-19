@@ -39,9 +39,10 @@ from ui.widgets import DropFileEdit, ImageDropZone, FileDropTree
 
 class RootMixin:
     def root_path(self) -> Path | None:
+        from services.browser import local_path
         raw = self.root_edit.text().strip()
         path = Path(raw) if raw else None
-        return path if path is not None and path.is_dir() else None
+        return path if path is not None and local_path(path) and not path.is_symlink() and not path.is_junction() and path.is_dir() else None
 
     def choose_root(self):
         if self.file_worker and self.file_worker.isRunning():
@@ -78,7 +79,6 @@ class RootMixin:
                 self.root_status.setText("目录可用，但设置保存失败：" + str(exc))
         self.root_edit.setToolTip(str(root))
         self.root_status.setText("资料直接保存在：" + str(root))
-        self.refresh_targets()
         self.refresh_browser(preferred=preferred or str(root), remember=save)
 
     def show_about(self):
@@ -93,6 +93,10 @@ class RootMixin:
 
     def closeEvent(self, event):
         self._scan_pending = False
+        for worker in getattr(self, "_directory_workers", []):
+            if worker.isRunning():
+                worker.request_cancel()
+                worker.wait(1000)
         if self.scan_worker and self.scan_worker.isRunning():
             self.scan_worker.request_cancel()
             self.scan_worker.wait(1000)
@@ -110,5 +114,6 @@ class RootMixin:
             event.ignore()
             return
         self._closing = True
+        self.flush_view_settings()
         super().closeEvent(event)
 

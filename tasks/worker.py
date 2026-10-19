@@ -146,3 +146,37 @@ class UndoWorker(TaskWorker):
         except Exception as exc:
             log.exception("undo_failed operation=%s", self.operation_id)
             self.failed.emit(str(exc))
+
+
+class DirectoryWorker(TaskWorker):
+    completed = Signal(object)
+
+    def __init__(self, root, directory):
+        super().__init__()
+        self.root, self.directory = root, directory
+
+    def run(self):
+        from services.browser import read_directory
+        try:
+            self.completed.emit(read_directory(self.root, self.directory, lambda: self.cancel_requested))
+        except Cancelled:
+            pass
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class CountWorker(TaskWorker):
+    completed = Signal(object)
+
+    def __init__(self, path):
+        super().__init__()
+        self.path = path
+
+    def run(self):
+        from catalog import count_contents
+        try:
+            self.completed.emit(count_contents(self.path, lambda: self.cancel_requested))
+        except Cancelled:
+            pass
+        except Exception as exc:
+            self.failed.emit(str(exc))

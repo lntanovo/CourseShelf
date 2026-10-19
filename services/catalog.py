@@ -8,6 +8,8 @@ import os
 import shutil
 import tempfile
 import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 from send2trash import send2trash
@@ -17,6 +19,23 @@ from organizer import CATEGORIES, build_plan, safe_name
 CATALOG_NAME = ".courseshelf.json"
 SCHEMA_VERSION = 2
 log = logging.getLogger("courseshelf")
+_snapshot = ContextVar("catalog_snapshot", default=None)
+
+
+def current_catalog(root):
+    cached = _snapshot.get()
+    if cached is not None and cached[0] == Path(root):
+        return cached[1]
+    return load_catalog(root)
+
+
+@contextmanager
+def catalog_snapshot(root):
+    token = _snapshot.set((Path(root), load_catalog(root)))
+    try:
+        yield
+    finally:
+        _snapshot.reset(token)
 
 
 def _audit(root, kind, *, src=None, dst=None, result="ok", error="", batch_id=None):
@@ -169,11 +188,11 @@ def _folder(root: Path, *parts: str, must_exist: bool = True) -> Path:
 
 
 def is_managed(root: Path, semester: str, course: str) -> bool:
-    return _key(semester, course) in load_catalog(root)["courses"]
+    return _key(semester, course) in current_catalog(root)["courses"]
 
 
 def categories_for(root: Path, semester: str, course: str) -> list[str]:
-    record = load_catalog(root)["courses"].get(_key(semester, course))
+    record = current_catalog(root)["courses"].get(_key(semester, course))
     if record is not None:
         return list(record["categories"])
     existing = _folder(root, semester, course, must_exist=False)
@@ -259,7 +278,7 @@ def set_aliases(root, semester, course, aliases):
 
 
 def aliases_for(root):
-    return {key: list(value.get("aliases", [])) for key, value in load_catalog(root)["courses"].items()}
+    return {key: list(value.get("aliases", [])) for key, value in current_catalog(root)["courses"].items()}
 
 
 def _checked_category(root: Path, semester: str, course: str, category: str) -> Path:
@@ -318,9 +337,12 @@ def rename_category(root: Path, semester: str, course: str, old: str, value: str
     return destination
 
 
-def count_contents(folder: Path) -> tuple[int, int]:
+def count_contents(folder: Path, cancelled=lambda: False) -> tuple[int, int]:
+    from file_ops import Cancelled
     files = directories = 0
     for _, dirs, names in os.walk(folder, followlinks=False):
+        if cancelled():
+            raise Cancelled("统计已取消")
         directories += len(dirs)
         files += len(names)
     return files, directories
@@ -366,7 +388,7 @@ def restore_defaults(root: Path, semester: str, course: str) -> list[Path]:
 
 
 def managed_paths(root: Path) -> list[Path]:
-    data = load_catalog(root)
+    data = current_catalog(root)
     root = _root(root)
     result = set()
     for key, record in data["courses"].items():
