@@ -53,3 +53,8 @@ Relocated uninstall: 310 owned files removed; user material and empty folder pre
 
 执行 tests/verify_milestone.ps1 -Milestone m4。17 项测试、冒烟、打包及搬移验收通过。记录逐项 copy/move 及目录操作和撤销；目标提交时复用流式 SHA-256，移动删除来源前先存校验记录。复制撤销走回收站；目标被修改、原来源被占用、重复撤销均拒绝。移动撤销保持原文件名（即使归档时加过序号）。同名同内容跳过，同名不同内容保留两个。非同名内容查重是可选项，本轮未实现。目录审计写失败写入日志，仍优先保证成功目录登记清单。原始输出 m4-*.log。
 
+
+## M5 匹配与别名（通过）
+
+执行 tests/verify_milestone.ps1 -Milestone m5。18 项测试、离线冒烟、构建、搬移验收全通过。启用 schema 2，验证 v1 备份和分类顺序不变，迁移注入失败不改原清单。高数别名唯一命中；共享别名不选课；模糊匹配低置信，不自动应用。别名只通过明确编辑或一次性确认保存。原始输出 m5-*.log。
+

@@ -15,7 +15,7 @@ from send2trash import send2trash
 from organizer import CATEGORIES, build_plan, safe_name
 
 CATALOG_NAME = ".courseshelf.json"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 log = logging.getLogger("courseshelf")
 
 
@@ -118,6 +118,9 @@ def _validate(data):
             raise CatalogError(f"管理记录含无效分类名称：{key}")
         if len({name.casefold() for name in categories}) != len(categories):
             raise CatalogError(f"管理记录含重复分类：{key}")
+        aliases = record.get("aliases", [])
+        if not isinstance(aliases, list) or any(not isinstance(alias, str) or not alias.strip() or len(alias) > 128 for alias in aliases):
+            raise CatalogError(f"管理记录含无效课程别名：{key}")
 
 
 def writable_catalog(root):
@@ -236,6 +239,27 @@ def import_course(root: Path, semester: str, course: str) -> None:
     record["categories"] = [name for name in record["categories"] if name in categories]
     record["categories"].extend(name for name in categories if name not in record["categories"])
     save_catalog(root, data)
+
+
+def set_aliases(root, semester, course, aliases):
+    data = writable_catalog(root)
+    record = data["courses"].get(_key(semester, course))
+    if record is None:
+        raise CatalogError("请先将课程目录纳入管理")
+    if not isinstance(aliases, list) or any(not isinstance(value, str) or not value.strip() or len(value.strip()) > 128 for value in aliases):
+        raise CatalogError("别名必须是非空文字，且每条不超过 128 字符")
+    values, seen = [], set()
+    for alias in aliases:
+        value = alias.strip()
+        if value.casefold() not in seen:
+            values.append(value)
+            seen.add(value.casefold())
+    record["aliases"] = values
+    save_catalog(root, data)
+
+
+def aliases_for(root):
+    return {key: list(value.get("aliases", [])) for key, value in load_catalog(root)["courses"].items()}
 
 
 def _checked_category(root: Path, semester: str, course: str, category: str) -> Path:

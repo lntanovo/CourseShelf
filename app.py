@@ -473,6 +473,7 @@ class MainWindow(QMainWindow):
             buttons.addWidget(self._button(label, method))
         buttons.addStretch()
         manage_layout.addLayout(buttons)
+        manage_layout.addWidget(self._button("编辑课程别名", self.edit_aliases_ui))
         layout.addWidget(manage)
         row = QHBoxLayout()
         row.addStretch()
@@ -548,6 +549,7 @@ class MainWindow(QMainWindow):
         self.suggestion_label = QLabel("文件名建议：选择来源文件后显示；最终以手动选择为准。")
         self.suggestion_label.setWordWrap(True)
         card_layout.addWidget(self.suggestion_label)
+        card_layout.addWidget(self._button("把本次选择记为别名…", self.remember_alias_ui))
         self.archive_choice_status = QLabel("请先选择资料总目录并生成课程分类。")
         self.archive_choice_status.setWordWrap(True)
         card_layout.addWidget(self.archive_choice_status)
@@ -1164,7 +1166,9 @@ class MainWindow(QMainWindow):
             return
         try:
             snapshot = self.course_snapshot()
-            added = build_inbox(paths, list(snapshot), snapshot, recursive=self.recursive_check.isChecked())
+            from catalog import aliases_for
+            added = build_inbox(paths, list(snapshot), snapshot, recursive=self.recursive_check.isChecked(),
+                                aliases=aliases_for(self.root_path()) if self.root_path() else {})
             if target:
                 relative = Path(target).relative_to(self.root_path())
                 for item in added:
@@ -1378,19 +1382,51 @@ class MainWindow(QMainWindow):
         self._suggesting = True
         try:
             courses = [self.course_combo.itemText(i) for i in range(self.course_combo.count()) if self.course_combo.itemData(i)]
-            result = suggest(source.name, courses)
-            if result.course:
+            from catalog import aliases_for
+            semester = self.archive_semester_combo.currentText()
+            aliases = {Path(key).name: value for key, value in aliases_for(self.root_path()).items()
+                       if Path(key).parts[0] == semester} if self.root_path() else {}
+            result = suggest(source.name, courses, aliases=aliases)
+            if result.course and result.confidence == "high":
                 self.course_combo.setCurrentText(result.course)
             else:
                 self.course_combo.setCurrentIndex(-1)
             categories = [self.category_combo.itemText(i) for i in range(self.category_combo.count())]
-            result = suggest(source.name, courses, categories)
+            result = suggest(source.name, courses, categories, aliases=aliases)
             if result.category:
                 self.category_combo.setCurrentText(result.category)
             self.suggestion_label.setText("文件名建议：" + result.reason + "。可手动修改目标。")
         finally:
             self._suggesting = False
             self.update_destination()
+
+    def edit_aliases_ui(self):
+        from catalog import aliases_for, set_aliases
+        def action(root, semester, course):
+            values = aliases_for(root).get(semester + "/" + course, [])
+            text, ok = QInputDialog.getMultiLineText(self, "编辑课程别名", "每行一个别名。共享别名会导致待手选；不会自动学习。", "\n".join(values))
+            if ok and confirm(self, "保存课程别名", f"为 {course} 保存以下别名？\n{text or '（清空）'}", "保存别名"):
+                set_aliases(root, semester, course, [line.strip() for line in text.splitlines() if line.strip()])
+        self._category_action(action)
+
+    def remember_alias_ui(self):
+        from catalog import aliases_for, set_aliases
+        choice = self._managed_course()
+        course_data = self.course_combo.currentData()
+        if not choice or not course_data:
+            self.archive_status.setText("请先为选中行手动选择课程")
+            return
+        root = self.root_path()
+        path = Path(course_data)
+        semester, course = path.parent.name, path.name
+        alias, ok = QInputDialog.getText(self, "把本次选择记为别名", f"请输入 {course} 的简称（仅本次显式保存）：")
+        if ok and alias.strip() and confirm(self, "保存别名", f"将“{alias.strip()}”记为“{course}”的别名？", "保存别名"):
+            try:
+                values = aliases_for(root).get(semester + "/" + course, [])
+                set_aliases(root, semester, course, [*values, alias.strip()])
+                self.archive_status.setText("课程别名已保存；不会自动记住其他选择")
+            except (OSError, ValueError) as exc:
+                self.archive_status.setText(str(exc))
 
     def file_dropped_on_tree(self, sources, raw_target):
         root = self.root_path()

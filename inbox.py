@@ -45,6 +45,9 @@ def build_inbox(paths, courses, categories, *, recursive=False, aliases=None):
             expanded.append(path)
     seen, result = set(), []
     names = [Path(key).name for key in courses]
+    name_aliases = {}
+    for key, values in (aliases or {}).items():
+        name_aliases.setdefault(Path(key).name, []).extend(values)
     for path in expanded:
         identity = os.path.normcase(os.path.abspath(path))
         if identity in seen:
@@ -55,11 +58,11 @@ def build_inbox(paths, courses, categories, *, recursive=False, aliases=None):
             if linked(path) or not path.is_file():
                 raise ValueError("只接受普通文件，不能是符号链接或目录联接")
             item.size = path.stat().st_size
-            guess = suggest(path.name, names)
+            guess = suggest(path.name, names, aliases=name_aliases)
             keys = [key for key in courses if Path(key).name == guess.course]
-            if len(keys) == 1:
+            if len(keys) == 1 and guess.confidence == "high":
                 key = keys[0]
-                guess = suggest(path.name, names, categories.get(key, []))
+                guess = suggest(path.name, names, categories.get(key, []), aliases=name_aliases)
                 item.suggested_course = key
                 item.suggested_category = guess.category
             item.reason = guess.reason if len(keys) <= 1 else "跨学期课程重名，需手选"

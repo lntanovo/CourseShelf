@@ -312,6 +312,36 @@ class ImprovementTests(unittest.TestCase):
         self.assertEqual(source.read_text(), "new content")
         self.assertFalse(target.exists())
 
+    def test_alias_migration_and_ambiguous_suggestions(self):
+        from catalog import aliases_for, set_aliases
+        from classifier import suggest
+        from inbox import build_inbox
+        path = self.root / ".courseshelf.json"
+        original = {"schema_version": 1, "courses": {"秋季/高等数学": {"categories": ["作业", "课件"]}}}
+        path.write_text(json.dumps(original), encoding="utf-8")
+        data = load_catalog(self.root)
+        self.assertEqual(data["schema_version"], 2)
+        self.assertEqual(json.loads(path.with_suffix(".json.bak").read_text()), original)
+        self.assertEqual(data["courses"]["秋季/高等数学"]["categories"], ["作业", "课件"])
+        set_aliases(self.root, "秋季", "高等数学", ["高数"])
+        aliases = aliases_for(self.root)
+        result = suggest("高数-第3章.pdf", ["高等数学"], ["课件"], aliases={"高等数学": ["高数"]})
+        self.assertEqual((result.course, result.confidence), ("高等数学", "high"))
+        ambiguous = suggest("高数.pdf", ["高等数学", "离散数学"], aliases={"高等数学": ["高数"], "离散数学": ["高数"]})
+        self.assertIsNone(ambiguous.course)
+        source = self.base / "高数-课件.pdf"
+        source.write_text("material")
+        item = build_inbox([source], ["秋季/高等数学"], {"秋季/高等数学": ["课件"]}, aliases=aliases)[0]
+        self.assertEqual(item.suggested_course, "秋季/高等数学")
+        self.assertIsNone(item.course, "a suggestion must not silently become a decision")
+        approximate = suggest("数字信号处里-课件.pdf", ["数字信号处理"])
+        self.assertEqual(approximate.confidence, "low")
+        with patch("catalog._migrate", side_effect=ValueError("injected migration failure")):
+            path.write_text(json.dumps(original), encoding="utf-8")
+            before = path.read_bytes()
+            self.assertTrue(load_catalog(self.root)["_read_only"])
+            self.assertEqual(path.read_bytes(), before)
+
 
 if __name__ == "__main__":
     unittest.main()
