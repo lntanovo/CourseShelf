@@ -180,3 +180,39 @@ class CountWorker(TaskWorker):
             pass
         except Exception as exc:
             self.failed.emit(str(exc))
+
+
+class FileActionWorker(TaskWorker):
+    completed = Signal(str)
+
+    def __init__(self, root, path, kind, name=None):
+        super().__init__()
+        self.root, self.path, self.kind, self.name = root, path, kind, name
+
+    def run(self):
+        from history import manage_file
+        try:
+            self.completed.emit(manage_file(self.root, self.path, self.kind, self.name, lambda: self.cancel_requested))
+        except Exception as exc:
+            log.exception("file_action_failed path=%s", self.path)
+            self.failed.emit(str(exc))
+
+
+class CategoryWorker(TaskWorker):
+    completed = Signal(str)
+
+    def __init__(self, choice, category, name=None):
+        super().__init__()
+        self.choice, self.category, self.name = choice, category, name
+
+    def run(self):
+        from catalog import rename_category, trash_category
+        try:
+            if self.name is None:
+                trash_category(*self.choice, self.category, cancelled=lambda: self.cancel_requested)
+            else:
+                rename_category(*self.choice, self.category, self.name, cancelled=lambda: self.cancel_requested)
+            self.completed.emit("分类操作已完成")
+        except Exception as exc:
+            log.exception("category_action_failed category=%s", self.category)
+            self.failed.emit(str(exc))

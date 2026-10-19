@@ -19,7 +19,7 @@ from organizer import CATEGORIES, build_plan, safe_name
 CATALOG_NAME = ".courseshelf.json"
 SCHEMA_VERSION = 2
 log = logging.getLogger("courseshelf")
-_snapshot = ContextVar("catalog_snapshot", default=None)
+_snapshot: ContextVar[tuple[Path, dict] | None] = ContextVar("catalog_snapshot", default=None)
 
 
 def current_catalog(root):
@@ -69,7 +69,7 @@ def _parts(key: str) -> tuple[str, str]:
 
 
 def _root(root: Path) -> Path:
-    if not root.is_dir():
+    if root.is_symlink() or root.is_junction() or not root.is_dir():
         raise CatalogError("资料总目录不存在，请重新选择")
     return root.resolve(strict=True)
 
@@ -146,7 +146,14 @@ def writable_catalog(root):
     data = load_catalog(root)
     if data.get("_read_only"):
         raise CatalogError(data["_warning"])
+    _check_backup(root)
     return data
+
+
+def _check_backup(root):
+    backup = _root(root) / (CATALOG_NAME + ".bak")
+    if backup.is_symlink() or backup.is_junction() or (backup.exists() and not backup.is_file()):
+        raise CatalogError("管理记录备份路径被链接或目录占用；拒绝写入")
 
 
 def save_catalog(root: Path, data: dict) -> None:
@@ -159,6 +166,7 @@ def save_catalog(root: Path, data: dict) -> None:
 
 def _atomic_save(root: Path, data: dict) -> None:
     root = _root(root)
+    _check_backup(root)
     path = root / CATALOG_NAME
     if path.is_file():
         shutil.copy2(path, path.with_suffix(".json.bak"))
@@ -178,7 +186,7 @@ def _folder(root: Path, *parts: str, must_exist: bool = True) -> Path:
     current = root
     for part in parts:
         current = current / _component(part)
-        if current.is_symlink():
+        if current.is_symlink() or current.is_junction():
             raise CatalogError("不能管理符号链接目录：" + str(current))
     if must_exist and not current.is_dir():
         raise CatalogError("目录不存在：" + str(current))
@@ -203,7 +211,7 @@ def categories_for(root: Path, semester: str, course: str) -> list[str]:
 
 def disk_categories(root: Path, semester: str, course: str) -> list[str]:
     folder = _folder(root, semester, course)
-    return sorted((p.name for p in folder.iterdir() if p.is_dir() and not p.is_symlink()), key=str.casefold)
+    return sorted((p.name for p in folder.iterdir() if p.is_dir() and not p.is_symlink() and not p.is_junction()), key=str.casefold)
 
 
 def plan_paths(root: Path, semester: str, courses: list[str]) -> tuple[Path, list[tuple[Path, list[str]]], list[Path]]:
@@ -227,7 +235,7 @@ def create_plan(root: Path, semester: str, courses: list[str]) -> tuple[int, int
     failures = []
     for path in paths:
         try:
-            if path.is_symlink():
+            if path.is_symlink() or path.is_junction():
                 raise CatalogError("不能复用符号链接目录")
             if path.exists():
                 if not path.is_dir():
@@ -241,9 +249,9 @@ def create_plan(root: Path, semester: str, courses: list[str]) -> tuple[int, int
             failures.append(f"{path}: {exc}")
     for course_path, categories in items:
         key = _key(semester_path.name, course_path.name)
-        if course_path.is_dir() and not course_path.is_symlink() and (course_path not in previously_existing or key in data["courses"]):
+        if course_path.is_dir() and not course_path.is_symlink() and not course_path.is_junction() and (course_path not in previously_existing or key in data["courses"]):
             succeeded = [name for name in categories if (course_path / name).is_dir()
-                         and not (course_path / name).is_symlink()]
+                         and not (course_path / name).is_symlink() and not (course_path / name).is_junction()]
             record = data["courses"].setdefault(key, {"categories": []})
             record["categories"].extend(name for name in succeeded if name not in record["categories"])
     save_catalog(root, data)
@@ -307,7 +315,37 @@ def add_category(root: Path, semester: str, course: str, value: str) -> Path:
     return destination
 
 
-def rename_category(root: Path, semester: str, course: str, old: str, value: str) -> Path:
+def _checked_contents(root, folder, cancelled=lambda: False):
+    """Directory ownership never implicitly grants ownership of its contents."""
+    from file_ops import Cancelled, _sha256
+    from history import owned_record
+    files = []
+    def fail(error):
+        raise error
+    for directory, dirs, names in os.walk(folder, followlinks=False, onerror=fail):
+        if cancelled():
+            raise Cancelled("分类操作已取消")
+        for name in [*dirs, *names]:
+            path = Path(directory) / name
+            if path.is_symlink() or path.is_junction():
+                raise CatalogError("分类包含链接，拒绝整体修改：" + str(path))
+        for name in names:
+            path = Path(directory) / name
+            item = owned_record(root, path)
+            if not path.is_file() or item is None:
+                raise CatalogError("分类包含非本应用归档的文件，拒绝整体修改：" + str(path))
+            before = path.stat()
+            digest = _sha256(path, cancelled)
+            after = path.stat()
+            if before.st_size != item["size"] or digest != item["sha256"] or (before.st_ino, before.st_size, before.st_mtime_ns) != (after.st_ino, after.st_size, after.st_mtime_ns):
+                raise CatalogError("分类包含内容已改变的文件，拒绝整体修改：" + str(path))
+            files.append((path, item))
+    if cancelled():
+        raise Cancelled("分类操作已取消")
+    return files
+
+
+def rename_category(root: Path, semester: str, course: str, old: str, value: str, cancelled=lambda: False) -> Path:
     source = _checked_category(root, semester, course, old)
     name = safe_name(value)
     if name != value.strip():
@@ -321,6 +359,7 @@ def rename_category(root: Path, semester: str, course: str, old: str, value: str
     record = data["courses"][_key(semester, course)]
     if old not in record["categories"]:
         raise CatalogError("该分类尚未纳入管理")
+    files = _checked_contents(root, source, cancelled)
     if name.casefold() == old.casefold():
         temporary = source.parent / (".courseshelf-rename-" + uuid.uuid4().hex)
         source.rename(temporary)
@@ -334,6 +373,13 @@ def rename_category(root: Path, semester: str, course: str, old: str, value: str
     record["categories"][record["categories"].index(old)] = name
     save_catalog(root, data)
     _audit(root, "rename", src=source, dst=destination)
+    from history import record as record_file
+    for path, item in files:
+        try:
+            record_file(root, "rename", src=path, dst=destination / path.relative_to(source),
+                        sha256=item["sha256"], size=item["size"])
+        except Exception:
+            log.exception("category_file_history_failed path=%s", path)
     return destination
 
 
@@ -348,12 +394,13 @@ def count_contents(folder: Path, cancelled=lambda: False) -> tuple[int, int]:
     return files, directories
 
 
-def trash_category(root: Path, semester: str, course: str, category: str) -> None:
+def trash_category(root: Path, semester: str, course: str, category: str, cancelled=lambda: False) -> None:
     path = _checked_category(root, semester, course, category)
     data = writable_catalog(root)
     record = data["courses"][_key(semester, course)]
     if category not in record["categories"]:
         raise CatalogError("该分类尚未纳入管理")
+    _checked_contents(root, path, cancelled)
     send2trash(str(path))  # Never fall back to permanent recursive deletion.
     log.info("trash_category path=%s", path)
     record["categories"].remove(category)
@@ -414,7 +461,7 @@ def restore_missing(root: Path, path: Path) -> list[Path]:
     missing = []
     current = path
     while current != root:
-        if current.is_symlink() or (current.exists() and not current.is_dir()):
+        if current.is_symlink() or current.is_junction() or (current.exists() and not current.is_dir()):
             raise CatalogError("目录路径被文件或符号链接阻挡：" + str(current))
         if not current.exists():
             missing.append(current)

@@ -71,7 +71,7 @@ def main():
     timer = QTimer()
     timer.setSingleShot(True)
     timer.timeout.connect(loop.quit)
-    with patch.object(socket.socket, "connect", side_effect=AssertionError("OCR attempted network access")):
+    with patch.dict(os.environ, {"COURSESHELF_OFFLINE_TEST": "1"}), patch.object(socket.socket, "connect", side_effect=AssertionError("OCR attempted network access")):
         window.start_ocr()
         assert not window.ocr_button.isEnabled()
         app.processEvents()

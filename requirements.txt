@@ -3,3 +3,5 @@ rapidocr==3.9.2
 onnxruntime==1.30.0
 Send2Trash==2.1.0
 Pillow==12.3.0
+opencv-python==4.11.0.86
+numpy==2.5.3

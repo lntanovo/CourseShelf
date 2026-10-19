@@ -1,95 +1,85 @@
-# CourseShelf · 课表资料整理 / Timetable File Organizer
+# CourseShelf · 离线课表与课程资料整理
 
-完全本地的 Windows 桌面工具：识别课表、人工核对课程、建立课程分类，并把资料复制或移动到指定目录。Offline Windows desktop app for timetable OCR and course file organization.
+Windows 10/11 便携桌面工具。课表识别、文件名建议、归档、搜索和操作历史全部在本机完成，无账号、云服务、遥测或模型下载。
 
-## 中文
+源码与构建脚本：[lntanovo/CourseShelf](https://github.com/lntanovo/CourseShelf)。
 
-### 启动和资料位置
+## 启动与资料位置
 
-完整解压 `dist\FilesOrganizer` 发布文件夹，双击其中的 `FilesOrganizer.exe`。`_internal` 文件夹和本地 OCR 模型必须与 exe 一起保留。发布文件夹可以搬到别的位置；不需要开发机的 Python 或虚拟环境。本地构建不会自动上传 GitHub 或创建 Release。
+完整解压 `dist/CourseShelf-1.1.0-Windows.zip`，双击 `CourseShelf/CourseShelf.exe`。保留 `_internal`、本地模型和许可文件；整个发布文件夹可以搬移，不需要安装 Python。本版未签名，Windows 可能显示 SmartScreen 提示。
 
-首次运行，点击顶部“选择资料目录”，选择一个**已有的普通文件夹**。完整路径常驻窗口顶部，可用“打开资料目录”在资源管理器中查看。资料实际保存在：
+选择一个已有的本机普通文件夹作为资料总目录。完整路径常驻窗口顶部，文件实际位于：
 
 ```text
-你选择的资料总目录\学期\课程\分类\文件
+资料总目录/学期/课程/分类/文件
 ```
 
-资料目录中的 `.courseshelf.json` 只记录应用管理的目录清单；真实文件仍以磁盘为准。`%LOCALAPPDATA%\FilesOrganizerDemo\settings.json` 只保存上次使用的路径，不保存课表图片或课程资料。把资料总目录搬走后，需要在界面重新选择新位置。
+不接受符号链接、目录联接、UNC 或映射网络盘作为资料根目录。磁盘始终是事实源；外部新增文件、课程和分类可刷新浏览。目录树按展开加载，不限制层数，大目录后台读取并分批显示。
 
-### 操作流程
+## 操作流程
 
-1. 在第 ① 步选择或拖入**一张** PNG/JPG/JPEG 课表图，点击“开始本地识别”，再核对、修改课程名。图片放下后不会自动识别；重新识别会询问是否替换已编辑的列表。也可以手动录入课程。
-2. 在第 ② 步填写学期并预览。预览不写磁盘；“确认生成目录”才创建。点击“下一步”时若还有待建目录，会弹窗提供“创建并继续 / 返回检查 / 取消”。新课程默认建 `课件`、`作业`、`复习资料`、`其他` 四类。
-3. 在第 ② 步选择课程后，可添加、重命名、将分类送入 Windows 回收站、恢复默认分类，或把已有课程目录纳入管理。删除分类前显示路径和内容数量。普通重复生成不会补回已删除的分类。
-4. 在第 ③ 步向收件箱添加多个文件或文件夹（默认不递归，可显式包含子文件夹）。点击“应用全部高置信建议”，逐行核对课程、分类和操作；无匹配项需手选。文件名规则会给出课程、分类建议和理由；含糊时请手动选。拖到右侧课程或分类节点会优先使用该节点。可在行内或下方编辑选中行的目标，选择“复制（默认）”或“移动”后点击“执行 N 项”。拖入本身不会修改文件。
-5. 复制会保留来源；移动先完整复制并验证大小与 SHA-256，再删除来源。同名文件加序号，绝不覆盖。文件操作有进度和取消按钮，逐行报告成功/跳过/失败及原因；失败不会中断整批，可仅重试失败项。同名策略为保留两个（默认）或跳过，不提供覆盖。已成功项不会被再次执行。成功后右侧文件列表立即刷新。
+1. 在第 ① 页选择或拖入一张 PNG/JPG/JPEG 课表图，点击本地识别，核对候选课程；也可手动添加。换图或重新识别会确认，取消不会清空已核对的列表。模型在启动后空闲时预热并在本地进程中复用；识别阶段有文字提示，可随时取消或取消任务后退出。最近一张未变化图片的结果仅在内存缓存，内容哈希改变即重新识别；不保存课表图或识别文本到 AppData。
+2. 在第 ② 页填写学期并预览。预览不写盘，确认生成才建立目录。新课程默认含课件、作业、复习资料和其他。既有课程不会自动纳入管理；可明确登记，再添加、重命名、回收分类、恢复默认分类或编辑课程别名。部分创建失败会逐项报告并登记成功部分，重复登记保留分类顺序。
+3. 在第 ③ 页向收件箱添加多个文件或文件夹。默认只读取文件夹的直接子文件，递归必须勾选。“应用全部高置信建议”后逐行核对课程、分类和操作。无匹配、共享别名或低置信模糊建议需手选。可在行内或下方编辑选中行的目标；拖入课程/分类节点只填目标，不写入文件。
+4. 点击“执行 N 项”才开始归档。默认复制；移动必须明确选择，每项完整复制并验证大小与 SHA-256 后才删来源。同名不同内容保留两个（默认）或跳过，绝不覆盖；同名同内容默认跳过并显示已有路径。批次逐行报告成功、失败、跳过及原因，一项失败不中断其他项，可仅重试失败项。取消保留已完成项，未处理项来源不变，不留临时复制文件；已成功项不会被再次执行。
+5. 右侧可按文件名、课程、分类搜索整个资料目录（最多 500 项）；启动或刷新时后台更新索引。大小列按数字排序。右键可打开、在资源管理器中定位、复制路径；只有本应用有成功记录且内容未变的文件可重命名或回收。F5 刷新、Ctrl+F 搜索、Ctrl+O 打开，Delete 对文件列表选中项发起安全确认。
+6. 第 ④ 页按批次显示最近 500 条操作记录。撤销复制先核对目标大小与 SHA-256，再送入回收站；撤销移动将已校验的目标移回原路径，原路径被占用则拒绝覆盖。目标被修改、记录缺失或操作已撤销时拒绝执行。分类回收记录请在 Windows 回收站手动还原；不支持撤销建目录、分类重命名或撤销本身。
 
-右侧目录树按展开读取磁盘，无层数上限；大目录在后台枚举并分批显示。资料总目录仅接受本机普通文件夹，拒绝 UNC 与映射网络盘。重启后恢复资料总目录和上次查看的位置。外部删除受管目录后，刷新会提示缺失；点击“重建选中空目录”只建立空文件夹，**不能恢复丢失的文件内容**。外部新建的分类刷新后可浏览、归档，也可把该课程重新纳入管理。
+资料总目录内原有文件不能作为移动来源，可选择复制。本应用不修改、删除未由本应用归档的文件。分类整体重命名或回收前会在后台核对每个文件的成功归档记录、大小与 SHA-256；存在未登记、内容已变或链接文件就拒绝整目录操作。纳入管理不会把既有文件自动变为可修改文件；回收确认框展示路径和内容数量。所有删除均走回收站，无永久删除回退。
 
-### 课程别名与清单兼容
+## 本地数据与兼容
 
-在“生成目录”页为受管课程编辑别名，例如为“高等数学”添加“高数”。全名和唯一别名可应用为高置信建议；共享别名或多个近似课程保留待手选，模糊建议不会自动填入收件箱。人工选择不会自动产生规则；“把本次选择记为别名”必须手工输入并确认。
+- 资料目录的 `.courseshelf.json` 只保存受管课程、分类顺序和显式设置的别名。v1 首次读取升级为 v2，原件备份为 `.courseshelf.json.bak`。遇到更高版本、损坏或迁移失败，仅浏览并禁用资料写入，不清空原文件。
+- `%LOCALAPPDATA%/CourseShelf/settings.json` 保存资料路径和查看位置；首次兼容复制旧版 `FilesOrganizerDemo` 的设置、索引和历史，保留旧文件。
+- 同目录的 `index.db` 是文件名缓存，可删除或损坏后重建；外部改名后刷新不会保留可打开的幽灵文件。`history.db` 独立保存持久历史，删除索引不丢历史。历史与绝对路径关联，跨机器或搬移资料目录后不自动转移撤销依据；可勾选“显示全部本机资料目录的历史”查看旧路径记录。
+- `logs/app.log` 本地轮转日志，5 MiB，保留 3 个备份。未捕获错误会弹出可复制的详情。不上传日志。
+- 同一设置目录只允许一个界面实例，重复启动会提示并尝试激活已有窗口。
+- 外部删除受管目录后，刷新会提示缺失；“重建选中空目录”仅创建空文件夹，不能恢复文件内容。
+- 别名只通过明确编辑或“把本次选择记为别名”保存，不自动学习人工选择。
 
-v1 清单首次读取迁移到 v2，保留 `.courseshelf.json.bak`。读取更新版本、无效清单或迁移失败时仅浏览，禁止写入资料；不会覆盖原清单。
+## 卸载
 
-### 操作历史与撤销
+先关闭 CourseShelf，运行同目录的 `uninstall.exe`。卸载仅删除发布清单中 SHA-256 匹配的程序文件，可选择清除路径设置；资料目录、未登记文件和用户自建空目录保留。日志和操作历史不会随清除路径设置而删除。便携版没有系统安装项。
 
-第 ④ 页按批次显示本机操作历史。复制撤销前核对目标的大小与 SHA-256，匹配后送入回收站；移动撤销会移回原路径，原路径已占用则拒绝覆盖。修改过的目标无法撤销，分类回收站记录需手动还原。不支持撤销建目录、分类重命名或撤销本身。
+## 源码运行与构建
 
-同名同内容文件默认跳过，并显示现有路径；同名不同内容仍按保留两个或跳过策略处理。操作历史位于 AppData 的 `history.db`，删除 `index.db` 不会丢失历史。历史不随资料目录搬到另一台机器。
-
-### 文件搜索
-
-右侧可按文件名、课程、分类搜索整个资料目录（最多显示 500 项）。启动或刷新时后台增量扫描，外部改名后刷新即可更新。`%LOCALAPPDATA%\FilesOrganizerDemo\index.db` 是可重建缓存，删除或损坏后重新扫描恢复；它不决定磁盘上的文件是否存在。
-
-### 卸载便携版
-
-关闭 CourseShelf 后，双击发布文件夹中的 `uninstall.exe`。它会说明要清理的发布文件夹，并询问是否清除本机保存的路径设置。只删除发布清单中校验匹配的程序文件；用户自行放进发布目录的文件及资料总目录不会删除。便携版没有 Windows“已安装应用”注册项。
-
-### 从源码运行、测试和重新打包
-
-需要 64 位 Windows 10/11 和 CPython 3.12。在 PowerShell 中：
+需要 64 位 Windows 和 Python 3.12。一次性安装开发依赖与官方 UPX 构建工具（安装阶段联网，应用运行无需网络）：
 
 ```powershell
 py -3.12 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements-build.txt
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\tools\setup_upx.ps1
+# 如需代理：.\tools\setup_upx.ps1 -Proxy http://127.0.0.1:7897
 .\.venv\Scripts\python.exe app.py
-.\.venv\Scripts\python.exe -m unittest discover -s tests -p test_optimization.py -v
-.\.venv\Scripts\python.exe tests\smoke_demo.py
-.\build.ps1
-.\tests\packed_acceptance.ps1
+.\tests\verify_milestone.ps1 -Milestone local
+.\.venv\Scripts\python.exe -m ruff check .
+.\.venv\Scripts\python.exe -m mypy --ignore-missing-imports .
 ```
 
-输出为 `dist\FilesOrganizer\FilesOrganizer.exe`、`uninstall.exe`、`release-manifest.json` 和 `_internal`。分享时必须压缩并发送**整个** `dist\FilesOrganizer` 文件夹。`build.ps1` 可重复运行，清理 PyInstaller 旧产物并重建发布清单。`课表.png` 是本地真实回归图片，含私人课程信息，已在 `.gitignore` 中排除。
-`packed_acceptance.ps1` 会把发布文件夹复制到系统临时目录，在那里运行 exe、离线 OCR 和卸载测试；若本机没有私人 `课表.png`，它会生成虚构课表。测试资料与设置也只放在临时目录，结束后清理副本。
-本轮逐项结果见 [验收记录](VALIDATION.md)。
+`build.ps1` 可单独执行。它生成图标、版本信息、发布清单、许可目录和版本化 zip；只压缩已验证的 OCR/数值库，Qt 和 Python 运行库保持原样。验收脚本使用虚构课表与系统临时目录，执行构建和搬移后的离线 OCR、归档与卸载测试。私人 `课表.png` 只读且已排除提交；CI 始终使用 `-UseFictionalSample`。本地构建不会自动上传 GitHub 或创建 Release。
 
-### 文件说明与范围
-
-| 文件 | 作用 |
+| 路径 | 作用 |
 | --- | --- |
-| `app.py` | 可执行入口与兼容导入 |
-| `ui/` | 主窗口、各标签页、控件和统一确认框 |
-| `tasks/` | OCR、归档、索引、目录读取和撤销任务 |
-| `services/` | 清单、归档、匹配、索引、历史等纯逻辑（根目录模块保留兼容入口） |
-| `organizer.py` | 本地 RapidOCR、课程提取和原有基础文件操作 |
-| `catalog.py` | 每课分类管理、受管目录清单、外部缺失检测 |
-| `classifier.py` | 仅根据文件名给出可解释的本地建议 |
-| `file_ops.py` | 分块复制/移动、校验、取消及同名保护 |
-| `uninstaller.py` | 便携版卸载程序源代码 |
-| `build.ps1` | 一键重建 exe、运行组件和发布清单 |
-| `tests/` | 虚构课表和临时目录验收测试 |
+| `app.py` | 程序与验证命令入口 |
+| `ui/` | 主窗口、标签页、控件和统一安全确认框 |
+| `tasks/` | 可取消的 OCR、批量归档、索引、目录读取和撤销任务 |
+| `services/` | 清单、文件操作、文件名匹配、索引和操作历史 |
+| 根目录同名模块 | 兼容上一版的导入入口 |
+| `tools/`、`build.ps1` | 构建工具、图标、许可收集、发布压缩包 |
+| `tests/` | 临时数据验收与虚构 OCR 课表 |
 
-本版使用批量收件箱，单文件也通过同一流程归档。OCR 对清晰的课程汇总表效果较好，其他版式可能需要手工修正。未实现全文检索、云同步、自动监控、安装程序或文件内容理解。
+详细实施、真实命令输出和 V01–V15 结果见 [IMPROVEMENT_VALIDATION.md](IMPROVEMENT_VALIDATION.md)。
+
+## 范围与局限
+
+OCR 适合清晰课程汇总表，支持课程名/科目、编号/课程编号、类型/类别等表头同义词。格子周课表、手机截图和复杂版式仍可能需要人工修正；未实现框选、坐标行聚类或可靠的逐课程置信度。未用非汇总表真实课表验证。本轮不提供跨文件名内容查重、正文检索、云同步、标签、自动监控或安装程序。
 
 ## English
 
-Extract the entire `dist\FilesOrganizer` folder and double-click `FilesOrganizer.exe`. Keep `_internal` beside it; the release includes Qt and local OCR models. Choose an existing ordinary folder as the library root. Your documents live at `root\semester\course\category\file`, never inside AppData. The app stores only path preferences in `%LOCALAPPDATA%\FilesOrganizerDemo\settings.json` and a lightweight folder manifest in the chosen root.
+Extract the complete CourseShelf folder and run `CourseShelf.exe`. All OCR, suggestions, filing, search and history stay local. Select an existing local library folder. Add multiple files/folders to the inbox (recursion is opt-in), apply confident suggestions, review every target, and execute. Copy is the default; moving verifies size and SHA-256 before removing the source. No file is overwritten. Identical named content is skipped, failures are isolated, and cancellation preserves completed items.
 
-Drop or select one PNG/JPG/JPEG timetable, run local OCR, and correct the course names. Previewing folders does not create them; the Next button asks before creating missing folders. Manage categories per course, including Recycle Bin deletion. Add multiple documents or folders to the inbox (recursion is opt-in), apply confident suggestions, then review each target before executing. Unmatched rows require manual selection. Failed rows can be retried; cancellation preserves completed items. **Copy is the default**; move requires explicit selection, verifies the destination, then removes the source. Name collisions receive a numbered copy without overwriting. Refresh detects externally deleted managed folders and offers to recreate empty folders; it cannot recover deleted contents.
+Search uses a rebuildable local cache; history is stored separately. Undo verifies checksums, sends copied targets to the Recycle Bin, and restores moved targets only when the original path is free. Only recorded and unchanged archived files can be renamed or trashed individually. User aliases are explicit. The portable uninstaller preserves user materials and unlisted files. OCR layout support remains limited; manually review all candidates.
 
-For a portable uninstall, close the app and double-click `uninstall.exe` in the release folder. It removes only matching application files from the release manifest and optionally clears path settings. It never deletes your library root or user files placed beside the app. Build from source with the PowerShell commands above; distribute the whole release folder. This version has no cloud service, full-text search, or installer.
+## License
 
-## License / 许可证
-
-[MIT](LICENSE). Third-party packages and OCR models retain their own licenses. / 第三方依赖和 OCR 模型遵循各自许可证。
+[MIT](LICENSE). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and the release's `licenses/` folder for Qt/PySide6 LGPL and other dependency/model notices. Qt DLLs remain dynamically linked and replaceable.

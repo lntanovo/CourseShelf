@@ -19,7 +19,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from app import MainWindow
 from catalog import (add_category, categories_for, create_plan, disk_categories, import_course,
-                     missing_paths, rename_category, restore_defaults, restore_missing, trash_category)
+                     missing_paths, rename_category, restore_missing, trash_category)
 from classifier import suggest
 from file_ops import Cancelled, PartialMoveError, transfer
 from uninstaller import digest, uninstall
@@ -43,13 +43,20 @@ class OptimizationTests(unittest.TestCase):
         self.assertEqual((made, existing, failures), (11, 0, []))
         course = self.root / "秋季" / "通信原理"
         other = self.root / "秋季" / "数字信号处理"
+        def archive_fixture(folder, name, content):
+            from history import record
+            source = self.base / name
+            source.write_text(content, encoding="utf-8")
+            receipt = {}
+            destination = transfer(source, folder, root=self.root, receipt=receipt)
+            record(self.root, "copy", src=source, dst=destination, size=receipt["size"], sha256=receipt["sha256"])
         add_category(self.root, "秋季", "通信原理", "实验")
-        (course / "实验" / "data.txt").write_text("keep", encoding="utf-8")
+        archive_fixture(course / "实验", "data.txt", "keep")
         rename_category(self.root, "秋季", "通信原理", "实验", "实验资料")
         self.assertEqual((course / "实验资料" / "data.txt").read_text(encoding="utf-8"), "keep")
         rename_category(self.root, "秋季", "通信原理", "实验资料", "实验资料")
         add_category(self.root, "秋季", "通信原理", "Lab")
-        (course / "Lab" / "case.txt").write_text("case")
+        archive_fixture(course / "Lab", "case.txt", "case")
         rename_category(self.root, "秋季", "通信原理", "Lab", "LAB")
         self.assertEqual((course / "LAB" / "case.txt").read_text(), "case")
         self.assertFalse((other / "实验资料").exists())

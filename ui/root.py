@@ -2,40 +2,19 @@
 
 from __future__ import annotations
 
-import os
-import json
-import sys
-import subprocess
-import tempfile
-import threading
-from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QPixmap
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QComboBox, QFileDialog,
-    QCheckBox, QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-    QInputDialog, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QProgressBar,
-    QPushButton, QScrollArea, QSizePolicy, QSplitter, QTableWidget, QTableWidgetItem,
-    QRadioButton, QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QFileDialog,
+    QMessageBox,
 )
 
-from organizer import build_plan, extract_candidates, load_settings, local_ocr, planned_copy_path, save_root, save_settings
-from catalog import (add_category, count_contents, create_plan,
-                     disk_categories, import_course, is_managed, missing_paths, plan_paths,
-                     rename_category, restore_defaults, restore_missing, trash_category)
-from classifier import suggest
-from file_ops import Cancelled, PartialMoveError, transfer
-from runtime import (acquire_instance, configure_logging, install_exception_hooks, log,
-                     open_with_shell, report_exception)
+from organizer import save_root
+from runtime import (log,
+                     open_with_shell)
 from dialogs import confirm
-from inbox import build_inbox
-from tasks import BatchWorker, FileWorker, ScanWorker, TaskWorker, UndoWorker
 
 
-from tasks import OcrWorker
-from ui.widgets import DropFileEdit, ImageDropZone, FileDropTree
 
 class RootMixin:
     def root_path(self) -> Path | None:
@@ -45,7 +24,7 @@ class RootMixin:
         return path if path is not None and local_path(path) and not path.is_symlink() and not path.is_junction() and path.is_dir() else None
 
     def choose_root(self):
-        if self.file_worker and self.file_worker.isRunning():
+        if any(worker and worker.isRunning() for worker in (self.file_worker, self.undo_worker, self.file_action_worker)):
             self.statusBar().showMessage("请等待归档结束或先取消批次")
             return
         initial = self.root_edit.text() if self.root_path() else str(Path.home())
@@ -93,6 +72,10 @@ class RootMixin:
 
     def closeEvent(self, event):
         self._scan_pending = False
+        prewarm = getattr(self, "prewarm_worker", None)
+        if prewarm and prewarm.isRunning():
+            prewarm.request_cancel()
+            prewarm.wait(1000)
         for worker in getattr(self, "_directory_workers", []):
             if worker.isRunning():
                 worker.request_cancel()
@@ -100,10 +83,13 @@ class RootMixin:
         if self.scan_worker and self.scan_worker.isRunning():
             self.scan_worker.request_cancel()
             self.scan_worker.wait(1000)
-        workers = [worker for worker in (self.worker, self.file_worker, self.scan_worker, self.undo_worker)
+        business = [worker for worker in (self.worker, self.file_worker, self.undo_worker, self.file_action_worker)
+                    if worker is not None and worker.isRunning()]
+        workers = [worker for worker in (self.worker, self.file_worker, self.scan_worker, self.undo_worker, self.file_action_worker, prewarm,
+                                         *getattr(self, "_directory_workers", []))
                    if worker is not None and worker.isRunning()]
         if workers:
-            if not getattr(self, "_closing", False) and not confirm(self, "退出 CourseShelf", "取消后台任务并退出？已完成的文件会保留。", "取消任务并退出"):
+            if business and not getattr(self, "_closing", False) and not confirm(self, "退出 CourseShelf", "取消后台任务并退出？已完成的文件会保留。", "取消任务并退出"):
                 event.ignore()
                 return
             for worker in workers:
@@ -115,5 +101,7 @@ class RootMixin:
             return
         self._closing = True
         self.flush_view_settings()
+        from services.ocr_process import stop
+        stop()
         super().closeEvent(event)
 

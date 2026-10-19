@@ -1,5 +1,7 @@
 # CourseShelf 本轮验收记录
 
+> 本文保留 2026-10-08 的上一轮记录。2026-10-19/20 的 M0–M7 实施与当前发布验收见 [IMPROVEMENT_VALIDATION.md](IMPROVEMENT_VALIDATION.md)。
+
 日期：2026-10-08。范围：`OPTIMIZATION_SPEC.md` 的 F01–F07、A01–A11。所有写入、移动、删除与卸载试验均使用系统临时目录或发布文件夹的临时副本；项目中的真实 `课表.png` 只用于本地 OCR 读取。
 
 ## 实际运行

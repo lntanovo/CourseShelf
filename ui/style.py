@@ -1,5 +1,5 @@
 STYLE = """
-QWidget { font-family: 'Microsoft YaHei UI'; font-size: 13px; color: #203247; }
+QWidget { font-family: 'Microsoft YaHei', 'Microsoft YaHei UI'; font-size: 13px; color: #203247; }
 QMainWindow, QScrollArea { background: #f3f6fa; }
 QWidget#tabBody { background: #f3f6fa; }
 QLabel#heading { font-size: 23px; font-weight: 700; color: #14283d; }

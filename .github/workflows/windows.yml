@@ -1,0 +1,39 @@
+name: Windows offline acceptance
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      PYTHONIOENCODING: utf-8
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Prepare environment
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+          .\tools\setup_upx.ps1
+      - name: Lint
+        run: .\.venv\Scripts\python.exe -m ruff check .
+      - name: Types
+        run: .\.venv\Scripts\python.exe -m mypy --ignore-missing-imports .
+      - name: Syntax, tests, offline OCR, build and relocated acceptance
+        shell: pwsh
+        run: .\tests\verify_milestone.ps1 -Milestone ci
+      - uses: actions/upload-artifact@v7
+        with:
+          name: CourseShelf-Windows
+          path: dist/CourseShelf-*-Windows.zip
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: verification-logs
+          path: artifacts/improvement/*.log

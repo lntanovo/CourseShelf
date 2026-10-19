@@ -98,6 +98,10 @@ class ImprovementTests(unittest.TestCase):
         box = confirmation(None, "移至回收站", "test", "移至回收站")
         self.assertEqual(box.defaultButton(), box.button(QMessageBox.StandardButton.No))
         self.assertEqual(box.escapeButton(), box.button(QMessageBox.StandardButton.No))
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+        QTimer.singleShot(0, lambda: QTest.keyClick(box, Qt.Key.Key_Return))
+        self.assertEqual(box.exec(), QMessageBox.StandardButton.No)
         logfile = configure_logging()
         bridge = ErrorBridge()
         details = []
@@ -126,7 +130,7 @@ class ImprovementTests(unittest.TestCase):
         lock.unlock()
 
     def test_ocr_cancel(self):
-        from smoke_demo import make_sample
+        from tests.smoke_demo import make_sample
         image = self.base / "sample.png"
         make_sample(image)
         window = MainWindow()
@@ -379,6 +383,183 @@ class ImprovementTests(unittest.TestCase):
         self.assertLess(max(gaps), 0.2)
         print(f"V14: 5000 files, maximum event-loop gap {max(gaps) * 1000:.1f} ms")
         window.close()
+
+    def test_settings_migration_and_file_actions(self):
+        from history import manage_file
+        from organizer import settings_path
+        local = self.base / "appdata"
+        legacy = local / "FilesOrganizerDemo"
+        legacy.mkdir(parents=True)
+        (legacy / "settings.json").write_text(json.dumps({"root": str(self.root)}), encoding="utf-8")
+        with patch.dict(os.environ, {"LOCALAPPDATA": str(local)}):
+            os.environ.pop("FILES_ORGANIZER_CONFIG_DIR", None)
+            self.assertEqual(settings_path(), local / "CourseShelf/settings.json")
+            self.assertEqual(json.loads(settings_path().read_text())["root"], str(self.root))
+            self.assertTrue((legacy / "settings.json").exists())
+        items = self.prepare_batch()[:1]
+        results, _ = self.run_batch(items)
+        path = Path(results[0][1]["target"])
+        manage_file(self.root, path, "rename", "renamed.pdf")
+        renamed = path.with_name("renamed.pdf")
+        self.assertTrue(renamed.is_file())
+        manage_file(self.root, renamed, "trash")
+        self.assertFalse(renamed.exists())
+        unowned = self.root / "user-file.txt"
+        unowned.write_text("never modify")
+        with self.assertRaisesRegex(ValueError, "本应用"):
+            manage_file(self.root, unowned, "trash")
+        self.assertTrue(unowned.exists())
+
+    def test_cached_ocr_offline_and_header_synonyms(self):
+        from tests.smoke_demo import make_sample
+        from services import ocr_process
+        from organizer import _table_course_lines
+        image = self.base / "sample.png"
+        make_sample(image)
+        timings, stages = [], []
+        try:
+            with patch.dict(os.environ, {"COURSESHELF_OFFLINE_TEST": "1"}):
+                pids = []
+                for _ in range(2):
+                    started = time.perf_counter()
+                    lines = ocr_process.recognize(image, lambda: False, stages.append)
+                    timings.append(time.perf_counter() - started)
+                    self.assertEqual(len(lines), 9)
+                    pids.append(ocr_process._process.pid)
+                self.assertEqual(pids[0], pids[1], "the model process must be reused")
+                self.assertLess(timings[1], timings[0])
+                self.assertTrue(any("复用" in stage for stage in stages))
+        finally:
+            ocr_process.stop()
+        def box(x, y):
+            return [[x-5,y-5],[x+5,y-5],[x+5,y+5],[x-5,y+5]]
+        texts = ["编号", "科目", "类型", "1", "示例课程"]
+        boxes = [box(100, 20), box(250,20), box(400,20), box(30,60), box(250,60)]
+        self.assertEqual(_table_course_lines(boxes, texts), ["示例课程"])
+        print(f"U03 cached OCR: {timings[0]:.3f}s -> {timings[1]:.3f}s")
+
+    def test_ocr_result_cache_checks_content(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from services import organizer
+        image = self.base / "cache-input.png"
+        image.write_bytes(b"first")
+        original = image.stat()
+        engine = Mock(side_effect=[SimpleNamespace(txts=["first"], boxes=None), SimpleNamespace(txts=["other"], boxes=None)])
+        with patch.object(organizer, "_engine", engine), patch.object(organizer, "_result_cache", None):
+            self.assertEqual(organizer.local_ocr(image), ["first"])
+            self.assertEqual(organizer.local_ocr(image), ["first"])
+            image.write_bytes(b"other")
+            os.utime(image, ns=(original.st_atime_ns, original.st_mtime_ns))
+            self.assertEqual(organizer.local_ocr(image), ["other"])
+            self.assertEqual(engine.call_count, 2)
+
+    def test_catalog_backup_link_blocks_writes_before_creation(self):
+        create_plan(self.root, "秋季", ["数学"])
+        backup = self.root / ".courseshelf.json.bak"
+        backup.write_text("do not follow backup links")
+        original = (self.root / ".courseshelf.json").read_bytes()
+        is_link = Path.is_symlink
+        with patch.object(Path, "is_symlink", lambda path: path == backup or is_link(path)):
+            with self.assertRaisesRegex(CatalogError, "备份路径"):
+                create_plan(self.root, "new", ["other"])
+        self.assertFalse((self.root / "new").exists())
+        self.assertEqual((self.root / ".courseshelf.json").read_bytes(), original)
+        self.assertEqual(backup.read_text(), "do not follow backup links")
+
+    def test_numeric_sort_and_shell_location(self):
+        create_plan(self.root, "秋季", ["数学"])
+        target = self.root / "秋季/数学/课件"
+        (target / "small.txt").write_bytes(b"a" * 9)
+        (target / "large.txt").write_bytes(b"a" * 100)
+        window = MainWindow()
+        window.root_edit.setText(str(self.root))
+        window.root_changed()
+        window.show_files(target)
+        from PySide6.QtCore import Qt
+        window.files_table.sortItems(1, Qt.SortOrder.AscendingOrder)
+        self.assertEqual(window.files_table.item(0, 0).text(), "small.txt")
+        window.files_table.setCurrentCell(0, 0)
+        with patch("ui.tabs.browser.subprocess.Popen") as locate:
+            window.locate_selected_file()
+        self.assertIn(str(target / "small.txt"), locate.call_args.args[0][1])
+        window.close()
+
+    def test_cross_process_instance_lock(self):
+        import subprocess
+        from organizer import settings_path
+        lock_path = settings_path().parent / "app.lock"
+        lock_path.parent.mkdir(exist_ok=True)
+        program = "from PySide6.QtCore import QLockFile; import sys; lock=QLockFile(sys.argv[1]); lock.setStaleLockTime(0); print(lock.tryLock(0),flush=True); sys.stdin.read(); lock.unlock()"
+        child = subprocess.Popen([sys.executable, "-c", program, str(lock_path)], stdin=subprocess.PIPE,
+                                 stdout=subprocess.PIPE, text=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        try:
+            self.assertEqual(child.stdout.readline().strip(), "True")
+            with patch.object(QMessageBox, "information") as message:
+                self.assertIsNone(acquire_instance())
+            self.assertIn("已在运行", message.call_args.args[1])
+        finally:
+            child.stdin.close()
+            child.wait(timeout=10)
+            child.stdout.close()
+        lock = acquire_instance()
+        self.assertIsNotNone(lock)
+        lock.unlock()
+
+    def test_ui_all_failed_then_retry(self):
+        items = self.prepare_batch()
+        window = MainWindow()
+        window.root_edit.setText(str(self.root))
+        window.root_changed()
+        window.add_to_inbox([item.source for item in items])
+        for item in window.inbox_items:
+            item.course, item.category = "秋季/数学", "课件"
+        window.render_inbox()
+        window.select_inbox_row(0)
+        with patch("tasks.worker.transfer", side_effect=lambda *a, **k: (_ for _ in ()).throw(PermissionError("injected read-only target"))):
+            window.archive_file()
+            wait_worker(window.file_worker)
+        self.assertTrue(all(item.status == "failed" for item in window.inbox_items))
+        self.assertIn("失败 20", window.archive_status.text())
+        window.retry_failed()
+        wait_worker(window.file_worker)
+        self.assertTrue(all(item.status == "ok" for item in window.inbox_items))
+        self.assertEqual({Path(item.target).parent.name for item in window.inbox_items}, {"课件"})
+        window.close()
+
+    def test_category_actions_protect_unmanaged_and_changed_files(self):
+        from catalog import rename_category, trash_category
+        from history import owned_record
+        from tasks import CategoryWorker
+        items = self.prepare_batch()
+        results, summary = self.run_batch(items[:1])
+        self.assertEqual(summary["ok"], 1)
+        target = Path(results[0][1]["target"])
+        folder = target.parent
+        unknown = folder / "user-note.txt"
+        unknown.write_bytes(b"user material")
+        original = (self.root / ".courseshelf.json").read_bytes()
+        for action in (lambda: rename_category(self.root, "秋季", "数学", "课件", "新分类"),
+                       lambda: trash_category(self.root, "秋季", "数学", "课件")):
+            with self.assertRaisesRegex(CatalogError, "非本应用"):
+                action()
+        self.assertEqual(unknown.read_bytes(), b"user material")
+        self.assertEqual((self.root / ".courseshelf.json").read_bytes(), original)
+        unknown.unlink()  # Disposable test input, never application deletion.
+        content = target.read_bytes()
+        target.write_bytes(b"changed")
+        with self.assertRaisesRegex(CatalogError, "内容已改变"):
+            trash_category(self.root, "秋季", "数学", "课件")
+        target.write_bytes(content)
+        cancelled = CategoryWorker((self.root, "秋季", "数学"), "课件", "新分类")
+        cancelled.request_cancel()
+        cancelled.run()
+        self.assertTrue(target.exists())
+        renamed = rename_category(self.root, "秋季", "数学", "课件", "新分类")
+        self.assertIsNotNone(owned_record(self.root, renamed / target.name))
+        with patch("catalog.send2trash") as recycle:
+            trash_category(self.root, "秋季", "数学", "新分类")
+        recycle.assert_called_once_with(str(renamed))
 
 
 if __name__ == "__main__":

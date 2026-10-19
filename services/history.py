@@ -23,14 +23,19 @@ def connect_history():
         raise ValueError("操作历史不能是符号链接")
     connection = sqlite3.connect(path, timeout=10)
     connection.row_factory = sqlite3.Row
-    connection.executescript("""
+    version = connection.execute("PRAGMA user_version").fetchone()[0]
+    if version not in {0, 1}:
+        connection.close()
+        raise ValueError("操作历史来自更新版本，保留原数据库并禁止修改")
+    if version == 0:
+        connection.executescript("""
       PRAGMA user_version=1;
       CREATE TABLE IF NOT EXISTS operation (
         id INTEGER PRIMARY KEY, library TEXT NOT NULL, batch_id TEXT NOT NULL,
         kind TEXT NOT NULL, src TEXT, dst TEXT, sha256 TEXT, size INTEGER,
         result TEXT NOT NULL, error TEXT, ts INTEGER NOT NULL, undo_of INTEGER);
       CREATE INDEX IF NOT EXISTS operation_ts ON operation(ts DESC);
-    """)
+        """)
     return connection
 
 
@@ -53,9 +58,54 @@ def update(operation_id, *, dst=None, sha256=None, size=None, result, error=""):
 
 def operations(root, batch_id="", limit=500):
     with closing(connect_history()) as connection:
-        return [dict(row) for row in connection.execute("""SELECT * FROM operation WHERE library=?
+        library = str(Path(root).resolve()) if root is not None else None
+        return [dict(row) for row in connection.execute("""SELECT * FROM operation WHERE (? IS NULL OR library=?)
           AND (?='' OR batch_id=?) ORDER BY ts DESC LIMIT ?""",
-                                                        (str(Path(root).resolve()), batch_id, batch_id, limit))]
+                                                        (library, library, batch_id, batch_id, limit))]
+
+
+def owned_record(root, path):
+    with closing(connect_history()) as connection:
+        row = connection.execute("""SELECT * FROM operation WHERE library=? AND dst=?
+          AND kind IN ('copy','move','rename') AND result='ok' AND sha256 IS NOT NULL
+          ORDER BY ts DESC LIMIT 1""", (str(Path(root).resolve()), str(path))).fetchone()
+        return dict(row) if row else None
+
+
+def manage_file(root, path, kind, name=None, cancelled=lambda: False):
+    from organizer import safe_name
+    writable_catalog(root)
+    root, path = Path(root).resolve(), Path(path)
+    record_data = owned_record(root, path)
+    if not record_data or not path.is_relative_to(root) or any(p.is_symlink() or p.is_junction() for p in [path, *path.parents]):
+        raise ValueError("只能修改本应用成功归档且路径未变化的文件")
+    before = path.stat()
+    after_hash = _sha256(path, cancelled)
+    after = path.stat()
+    if before.st_size != record_data["size"] or after_hash != record_data["sha256"] or (before.st_ino, before.st_mtime_ns, before.st_size) != (after.st_ino, after.st_mtime_ns, after.st_size):
+        raise ValueError("文件内容已改变，拒绝修改")
+    if cancelled():
+        raise ValueError("操作已取消")
+    target = None
+    if kind == "rename":
+        if not name or safe_name(name) != name or Path(name).name != name:
+            raise ValueError("文件名无效")
+        target = path.with_name(name)
+        if target.exists():
+            raise ValueError("目标同名文件已存在，拒绝覆盖")
+    elif kind != "trash":
+        raise ValueError("未知文件操作")
+    operation_id = record(root, kind, src=path, dst=target, sha256=record_data["sha256"], size=before.st_size, result="pending")
+    try:
+        if kind == "rename":
+            path.rename(target)
+        else:
+            send2trash(str(path))
+        update(operation_id, result="ok")
+        return "已重命名：" + str(target) if target else "已移至回收站：" + str(path)
+    except Exception as exc:
+        update(operation_id, result="failed", error=str(exc))
+        raise
 
 
 def undo(root, operation_id, cancelled=lambda: False):

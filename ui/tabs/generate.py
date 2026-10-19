@@ -2,40 +2,21 @@
 
 from __future__ import annotations
 
-import os
-import json
-import sys
-import subprocess
-import tempfile
-import threading
-from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QPixmap
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QComboBox, QFileDialog,
-    QCheckBox, QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-    QInputDialog, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QProgressBar,
-    QPushButton, QScrollArea, QSizePolicy, QSplitter, QTableWidget, QTableWidgetItem,
-    QRadioButton, QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QHBoxLayout, QLabel, QLineEdit,
+    QInputDialog, QListWidget, QMessageBox, QWidget,
 )
 
-from organizer import build_plan, extract_candidates, load_settings, local_ocr, planned_copy_path, save_root, save_settings
-from catalog import (add_category, count_contents, create_plan,
+from organizer import build_plan
+from catalog import (add_category, create_plan,
                      disk_categories, import_course, is_managed, missing_paths, plan_paths,
-                     rename_category, restore_defaults, restore_missing, trash_category)
-from classifier import suggest
-from file_ops import Cancelled, PartialMoveError, transfer
-from runtime import (acquire_instance, configure_logging, install_exception_hooks, log,
-                     open_with_shell, report_exception)
+                     restore_defaults, restore_missing)
 from dialogs import confirm
-from inbox import build_inbox
-from tasks import BatchWorker, FileWorker, ScanWorker, TaskWorker, UndoWorker
 
 
-from tasks import OcrWorker
-from ui.widgets import DropFileEdit, ImageDropZone, FileDropTree
 
 class GenerateMixin:
     def _make_generate_tab(self) -> QWidget:
@@ -188,7 +169,7 @@ class GenerateMixin:
             self.manage_path.setText("课程目录不可用：" + str(exc))
 
     def _category_action(self, operation):
-        if any(worker and worker.isRunning() for worker in (self.file_worker, self.undo_worker)):
+        if any(worker and worker.isRunning() for worker in (self.file_worker, self.undo_worker, self.file_action_worker)):
             self.statusBar().showMessage("请先等待归档或撤销结束")
             return
         choice = self._managed_course()
@@ -225,10 +206,23 @@ class GenerateMixin:
                 raise ValueError("请先选择一个分类")
             name, ok = QInputDialog.getText(self, "重命名分类", "新名称", text=old.text())
             if ok and name.strip() and QMessageBox.question(self, "确认重命名", f"{root / semester / course / old.text()}\n→ {root / semester / course / name.strip()}", defaultButton=QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
-                rename_category(root, semester, course, old.text(), name)
+                self.start_category_action((root, semester, course), old.text(), name)
         self._category_action(action)
 
+    def start_category_action(self, choice, category, name=None):
+        from tasks import CategoryWorker
+        self.file_action_worker = CategoryWorker(choice, category, name)
+        self.statusBar().showMessage("正在后台校验分类内文件的归档记录与内容…")
+        self.file_action_worker.completed.connect(self.statusBar().showMessage)
+        self.file_action_worker.failed.connect(self.statusBar().showMessage)
+        self.file_action_worker.finished.connect(self.invalidate_preview)
+        self.file_action_worker.finished.connect(self.request_refresh)
+        self.file_action_worker.start()
+
     def delete_category_ui(self):
+        if any(worker and worker.isRunning() for worker in (self.file_worker, self.undo_worker, self.file_action_worker)):
+            self.statusBar().showMessage("请先等待归档或撤销结束")
+            return
         from tasks import CountWorker
         choice = self._managed_course()
         item = self.manage_categories.currentItem()
@@ -249,16 +243,14 @@ class GenerateMixin:
     def confirm_trash_category(self, choice, name, counts):
         if getattr(self, "_closing", False):
             return
+        if any(worker and worker.isRunning() for worker in (self.file_worker, self.undo_worker, self.file_action_worker)):
+            self.statusBar().showMessage("归档或撤销正在进行，请稍后重新统计")
+            return
         root, semester, course = choice
         files, directories = counts
         path = root / semester / course / name
         if confirm(self, "移至回收站", f"将整个分类目录移至回收站？\n{path}\n包含 {files} 个文件、{directories} 个子目录。"):
-            try:
-                trash_category(root, semester, course, name)
-                self.invalidate_preview()
-                self.request_refresh()
-            except (OSError, ValueError) as exc:
-                QMessageBox.warning(self, "分类操作失败", str(exc))
+            self.start_category_action(choice, name)
 
     def restore_defaults_ui(self):
         def action(root, semester, course):

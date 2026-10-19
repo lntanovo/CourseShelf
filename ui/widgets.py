@@ -1,4 +1,3 @@
-from pathlib import Path
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QLineEdit, QLabel, QTreeWidget
 

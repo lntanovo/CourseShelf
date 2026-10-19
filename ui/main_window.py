@@ -2,40 +2,20 @@
 
 from __future__ import annotations
 
-import os
-import json
-import sys
-import subprocess
-import tempfile
-import threading
-from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QPixmap
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QComboBox, QFileDialog,
-    QCheckBox, QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-    QInputDialog, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QProgressBar,
-    QPushButton, QScrollArea, QSizePolicy, QSplitter, QTableWidget, QTableWidgetItem,
-    QRadioButton, QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QFrame, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
+    QMainWindow, QMessageBox, QPushButton, QScrollArea, QSplitter, QTabWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
-from organizer import build_plan, extract_candidates, load_settings, local_ocr, planned_copy_path, save_root, save_settings
-from catalog import (add_category, count_contents, create_plan,
-                     disk_categories, import_course, is_managed, missing_paths, plan_paths,
-                     rename_category, restore_defaults, restore_missing, trash_category)
-from classifier import suggest
-from file_ops import Cancelled, PartialMoveError, transfer
-from runtime import (acquire_instance, configure_logging, install_exception_hooks, log,
-                     open_with_shell, report_exception)
-from dialogs import confirm
-from inbox import build_inbox
-from tasks import BatchWorker, FileWorker, ScanWorker, TaskWorker, UndoWorker
+from organizer import load_settings
+from tasks import FileWorker
 
 
 from tasks import OcrWorker
-from ui.widgets import DropFileEdit, ImageDropZone, FileDropTree
 from .root import RootMixin
 from .tabs.ocr import OcrMixin
 from .tabs.generate import GenerateMixin
@@ -47,7 +27,9 @@ from .style import STYLE
 class MainWindow(RootMixin, OcrMixin, GenerateMixin, ArchiveMixin, BrowserMixin, HistoryMixin, QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("学习资料整理")
+        from runtime import initialize_gui
+        initialize_gui()
+        self.setWindowTitle("CourseShelf")
         self.resize(1380, 860)
         self.setMinimumSize(1040, 680)
         self.image_path: Path | None = None
@@ -78,7 +60,7 @@ class MainWindow(RootMixin, OcrMixin, GenerateMixin, ArchiveMixin, BrowserMixin,
         outer.setContentsMargins(20, 16, 20, 16)
         outer.setSpacing(14)
 
-        heading = QLabel("学习资料整理")
+        heading = QLabel("CourseShelf")
         heading.setObjectName("heading")
         outer.addWidget(heading)
         description = QLabel("识别课表 → 核对课程 → 生成目录 → 整理资料。所有资料都保存在你选择的本机文件夹中。")
@@ -98,7 +80,7 @@ class MainWindow(RootMixin, OcrMixin, GenerateMixin, ArchiveMixin, BrowserMixin,
         self.tabs.addTab(self._make_history_tab(), "4  操作记录")
         horizontal.addWidget(self.tabs)
         horizontal.addWidget(self._make_browser())
-        horizontal.setSizes([590, 710])
+        horizontal.setSizes([760, 580])
         self.setStyleSheet(STYLE)
         self.statusBar().showMessage("请选择资料总目录，或导入课表开始")
 

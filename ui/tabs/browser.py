@@ -2,43 +2,32 @@
 
 from __future__ import annotations
 
-import os
-import json
-import sys
 import subprocess
-import tempfile
-import threading
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QPixmap
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QShortcut
+from PySide6.QtWidgets import QMenu, QFileIconProvider
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QComboBox, QFileDialog,
-    QCheckBox, QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-    QInputDialog, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QProgressBar,
-    QPushButton, QScrollArea, QSizePolicy, QSplitter, QTableWidget, QTableWidgetItem,
-    QRadioButton, QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QApplication, QComboBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+    QInputDialog, QSizePolicy, QSplitter, QTableWidget, QTableWidgetItem,
+    QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
-from organizer import build_plan, extract_candidates, load_settings, local_ocr, planned_copy_path, save_root, save_settings
-from catalog import (add_category, count_contents, create_plan,
-                     disk_categories, import_course, is_managed, missing_paths, plan_paths,
-                     rename_category, restore_defaults, restore_missing, trash_category)
-from classifier import suggest
-from file_ops import Cancelled, PartialMoveError, transfer
-from runtime import (acquire_instance, configure_logging, install_exception_hooks, log,
-                     open_with_shell, report_exception)
+from organizer import save_settings
+from runtime import (log,
+                     open_with_shell)
 from dialogs import confirm
-from inbox import build_inbox
-from tasks import BatchWorker, FileWorker, ScanWorker, TaskWorker, UndoWorker
+from tasks import ScanWorker
 
 
-from tasks import OcrWorker
-from ui.widgets import DropFileEdit, ImageDropZone, FileDropTree
+from ui.widgets import FileDropTree
 
 class BrowserMixin:
     def _make_browser(self) -> QWidget:
+        self.file_action_worker = None
+        self._file_icon = QFileIconProvider().icon(QFileIconProvider.IconType.File)
         self._directory_workers = []
         self._tree_epoch = self._files_epoch = 0
         self._tree_loaded = set()
@@ -110,6 +99,15 @@ class BrowserMixin:
         files_layout.addWidget(self.index_status)
         self.files_table = QTableWidget(0, 3)
         self.files_table.setHorizontalHeaderLabels(["文件名", "大小", "修改时间"])
+        self.files_table.setSortingEnabled(True)
+        self.files_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.files_table.customContextMenuRequested.connect(self.file_context_menu)
+        for key, callback in (("F5", self.refresh_browser), ("Ctrl+F", self.search_edit.setFocus),
+                              ("Ctrl+O", self.open_selected_file), ("Delete", lambda: self.change_selected_file("trash"))):
+            shortcut = QShortcut(key, self.files_table if key == "Delete" else self)
+            if key == "Delete":
+                shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+            shortcut.activated.connect(callback)
         self.files_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.files_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.files_table.setAlternatingRowColors(True)
@@ -131,7 +129,14 @@ class BrowserMixin:
             self.root_changed(save=False)
             return
         with catalog_snapshot(root):
-            self._refresh_browser(preferred=preferred, remember=remember)
+            previous = self._loading_inbox
+            self._loading_inbox = True
+            try:
+                self._refresh_browser(preferred=preferred, remember=remember)
+            finally:
+                self._loading_inbox = previous
+            if not previous and 0 <= self._selected_inbox < len(self.inbox_items):
+                self.select_inbox_row(self._selected_inbox)
 
     def _refresh_browser(self, preferred=None, remember=True):
         root = self.root_path()
@@ -190,15 +195,21 @@ class BrowserMixin:
         from library_index import search
         try:
             rows = search(root, self.search_edit.text().strip(), self.search_course.text().strip(), self.search_category.text().strip())
+            self._files_epoch += 1
+            self.files_table.setSortingEnabled(False)
             self.files_table.setRowCount(len(rows))
             for row, record in enumerate(rows):
                 path = root / record["rel_path"]
                 name = QTableWidgetItem(record["rel_path"])
                 name.setData(Qt.ItemDataRole.UserRole, str(path))
+                name.setIcon(self._file_icon)
                 self.files_table.setItem(row, 0, name)
-                self.files_table.setItem(row, 1, QTableWidgetItem(str(record["size"])))
+                size = QTableWidgetItem()
+                size.setData(Qt.ItemDataRole.EditRole, record["size"])
+                self.files_table.setItem(row, 1, size)
                 self.files_table.setItem(row, 2, QTableWidgetItem(datetime.fromtimestamp(record["mtime_ns"] / 1e9).strftime("%Y-%m-%d %H:%M")))
             self.files_title.setText(f"搜索结果 · {len(rows)} 个（最多 500）")
+            self.files_table.setSortingEnabled(True)
         except Exception as exc:
             log.exception("search_failed")
             self.index_status.setText("索引不可用，正在重建：" + str(exc))
@@ -315,6 +326,7 @@ class BrowserMixin:
             if epoch != self._files_epoch or getattr(self, "_closing", False):
                 return
             files = data["files"]
+            self.files_table.setSortingEnabled(False)
             self.files_table.setRowCount(len(files))
             self.files_title.setText(f"文件 · {len(files)} 个")
             def chunk(start=0):
@@ -324,11 +336,16 @@ class BrowserMixin:
                     path, size, modified = files[row]
                     name = QTableWidgetItem(path.name)
                     name.setData(Qt.ItemDataRole.UserRole, str(path))
+                    name.setIcon(self._file_icon)
                     self.files_table.setItem(row, 0, name)
-                    self.files_table.setItem(row, 1, QTableWidgetItem(f"{size:,} B"))
+                    size_item = QTableWidgetItem()
+                    size_item.setData(Qt.ItemDataRole.EditRole, size)
+                    self.files_table.setItem(row, 1, size_item)
                     self.files_table.setItem(row, 2, QTableWidgetItem(datetime.fromtimestamp(modified).strftime("%Y-%m-%d %H:%M")))
                 if start + 64 < len(files):
                     QTimer.singleShot(0, lambda: chunk(start + 64))
+                else:
+                    self.files_table.setSortingEnabled(True)
             chunk()
         if snapshot is None:
             self.files_title.setText("正在后台读取文件…")
@@ -365,10 +382,57 @@ class BrowserMixin:
         else:
             self.browser_path_label.setText("没有可打开的目录，请先选择资料总目录。")
 
-    def open_selected_file(self, index):
-        item = self.files_table.item(index.row(), 0)
+    def open_selected_file(self, index=None):
+        item = self.files_table.item(index.row() if hasattr(index, "row") else self.files_table.currentRow(), 0)
         if item:
             path = Path(item.data(Qt.ItemDataRole.UserRole))
             if path.is_file():
                 open_with_shell(path, self.statusBar().showMessage)
+            else:
+                self.statusBar().showMessage("文件已被外部删除，请刷新")
+
+    def selected_file_path(self):
+        item = self.files_table.item(self.files_table.currentRow(), 0)
+        return Path(item.data(Qt.ItemDataRole.UserRole)) if item else None
+
+    def locate_selected_file(self):
+        path = self.selected_file_path()
+        if path and path.exists():
+            try:
+                subprocess.Popen(["explorer.exe", "/select," + str(path)])
+            except OSError as exc:
+                self.statusBar().showMessage("无法在资源管理器中定位：" + str(exc))
+
+    def file_context_menu(self, position):
+        from history import owned_record
+        path = self.selected_file_path()
+        if path is None:
+            return
+        menu = QMenu(self)
+        menu.addAction("打开", self.open_selected_file)
+        menu.addAction("在资源管理器中定位", self.locate_selected_file)
+        menu.addAction("复制完整路径", lambda: QApplication.clipboard().setText(str(path)))
+        owned = bool(owned_record(self.root_path(), path))
+        for title, kind in (("重命名", "rename"), ("移至回收站", "trash")):
+            action = menu.addAction(title, lambda checked=False, k=kind: self.change_selected_file(k))
+            action.setEnabled(owned)
+        menu.exec(self.files_table.viewport().mapToGlobal(position))
+
+    def change_selected_file(self, kind):
+        from tasks import FileActionWorker
+        path = self.selected_file_path()
+        if path is None or any(worker and worker.isRunning() for worker in (self.file_worker, self.undo_worker, self.file_action_worker)):
+            return
+        name = None
+        if kind == "rename":
+            name, ok = QInputDialog.getText(self, "重命名已归档文件", "新文件名", text=path.name)
+            if not ok or name == path.name:
+                return
+        if not confirm(self, "重命名" if kind == "rename" else "移至回收站", str(path) + ("\n→ " + name if name else "\n此文件将进入回收站")):
+            return
+        self.file_action_worker = FileActionWorker(self.root_path(), path, kind, name)
+        self.file_action_worker.completed.connect(self.statusBar().showMessage)
+        self.file_action_worker.failed.connect(self.statusBar().showMessage)
+        self.file_action_worker.finished.connect(self.request_refresh)
+        self.file_action_worker.start()
 

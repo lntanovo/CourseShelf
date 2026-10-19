@@ -10,3 +10,8 @@ dist-debug/
 DEMO_HANDOFF.md
 TECHNICAL_SPEC.md
 NEXT_CHAT_PROMPT.md
+.tmp/
+.tools/
+artifacts/
+.mypy_cache/
+.ruff_cache/

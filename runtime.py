@@ -12,12 +12,26 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QLockFile, Qt, Signal
+from PySide6.QtGui import QFontDatabase, QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from organizer import settings_path
 
 VERSION = "1.1.0"
 log = logging.getLogger("courseshelf")
+
+_gui_initialized = False
+
+
+def initialize_gui():
+    global _gui_initialized
+    if _gui_initialized:
+        return
+    font = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts/msyh.ttc"
+    if font.is_file():
+        QFontDatabase.addApplicationFont(str(font))
+    QApplication.instance().setWindowIcon(QIcon(str(Path(__file__).parent / "assets/courseshelf.ico")))
+    _gui_initialized = True
 
 
 class ErrorBridge(QObject):
@@ -90,7 +104,7 @@ def acquire_instance():
     if lock.tryLock(0):
         return lock
     if os.name == "nt":
-        for title in ("CourseShelf", "学习资料整理"):
+        for title in ("CourseShelf",):
             window = ctypes.windll.user32.FindWindowW(None, title)
             if window:
                 ctypes.windll.user32.ShowWindow(window, 9)

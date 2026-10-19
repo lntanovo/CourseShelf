@@ -23,19 +23,28 @@ def connect_index():
     if linked(path):
         raise ValueError("索引文件不能是符号链接或目录联接")
     connection = None
+    initialize = False
     try:
         connection = sqlite3.connect(path, timeout=10)
         if connection.execute("PRAGMA quick_check").fetchone()[0] != "ok":
             raise sqlite3.DatabaseError("索引校验失败")
-        if connection.execute("PRAGMA user_version").fetchone()[0] not in {0, 1}:
+        version = connection.execute("PRAGMA user_version").fetchone()[0]
+        if version not in {0, 1}:
             raise sqlite3.DatabaseError("索引版本不匹配")
+        initialize = version == 0
+        if not initialize:
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(file_record)")}
+            if not {"library", "rel_path", "name", "size", "mtime_ns", "sha256", "status", "seen_at", "course", "category"} <= columns:
+                raise sqlite3.DatabaseError("索引表结构不完整")
     except sqlite3.DatabaseError:
         if connection is not None:
             connection.close()
         path.rename(path.with_name("index.broken-" + uuid.uuid4().hex + ".db"))
         connection = sqlite3.connect(path, timeout=10)
+        initialize = True
     connection.row_factory = sqlite3.Row
-    connection.executescript("""
+    if initialize:
+        connection.executescript("""
         PRAGMA user_version = 1;
         CREATE TABLE IF NOT EXISTS file_record (
           id INTEGER PRIMARY KEY, library TEXT NOT NULL, rel_path TEXT NOT NULL,
@@ -44,7 +53,7 @@ def connect_index():
           seen_at INTEGER NOT NULL, UNIQUE(library, rel_path));
         CREATE INDEX IF NOT EXISTS file_record_name ON file_record(name);
         CREATE INDEX IF NOT EXISTS file_record_course ON file_record(library, course, category);
-    """)
+        """)
     return connection
 
 

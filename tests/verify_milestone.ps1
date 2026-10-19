@@ -1,5 +1,6 @@
 param([Parameter(Mandatory=$true)][string]$Milestone)
 $ErrorActionPreference = 'Stop'
+$env:PYTHONIOENCODING = 'utf-8'
 $project = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 Set-Location -LiteralPath $project
 $python = Join-Path $project '.venv\Scripts\python.exe'

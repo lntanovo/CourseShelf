@@ -2,40 +2,23 @@
 
 from __future__ import annotations
 
-import os
-import json
-import sys
-import subprocess
-import tempfile
-import threading
-from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QPixmap
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QComboBox, QFileDialog,
-    QCheckBox, QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-    QInputDialog, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QProgressBar,
-    QPushButton, QScrollArea, QSizePolicy, QSplitter, QTableWidget, QTableWidgetItem,
-    QRadioButton, QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QFileDialog,
+    QHBoxLayout, QLabel, QLineEdit,
+    QListWidget, QListWidgetItem, QMessageBox, QProgressBar,
+    QWidget,
 )
 
-from organizer import build_plan, extract_candidates, load_settings, local_ocr, planned_copy_path, save_root, save_settings
-from catalog import (add_category, count_contents, create_plan,
-                     disk_categories, import_course, is_managed, missing_paths, plan_paths,
-                     rename_category, restore_defaults, restore_missing, trash_category)
-from classifier import suggest
-from file_ops import Cancelled, PartialMoveError, transfer
-from runtime import (acquire_instance, configure_logging, install_exception_hooks, log,
-                     open_with_shell, report_exception)
-from dialogs import confirm
-from inbox import build_inbox
-from tasks import BatchWorker, FileWorker, ScanWorker, TaskWorker, UndoWorker
+from organizer import extract_candidates
+from runtime import (log)
 
 
 from tasks import OcrWorker
-from ui.widgets import DropFileEdit, ImageDropZone, FileDropTree
+from ui.widgets import ImageDropZone
 
 class OcrMixin:
     def _make_ocr_tab(self) -> QWidget:
@@ -59,6 +42,9 @@ class OcrMixin:
         self.ocr_button = self._button("开始本地识别", self.start_ocr, True)
         self.ocr_button.setEnabled(False)
         row.addWidget(self.ocr_button)
+        self.cancel_ocr_button = self._button("取消识别", self.cancel_ocr)
+        self.cancel_ocr_button.setVisible(False)
+        row.addWidget(self.cancel_ocr_button)
         row.addStretch()
         image_layout.addLayout(row)
         self.ocr_progress = QProgressBar()
@@ -132,10 +118,11 @@ class OcrMixin:
                 self, "重新识别", "重新识别将替换已核对或手工修改的课程列表，继续？", defaultButton=QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
             return
         self.ocr_button.setEnabled(False)
-        self.ocr_progress.setRange(0, 0)
-        self.ocr_progress.setVisible(True)
+        self.ocr_progress.setVisible(False)
+        self.cancel_ocr_button.setVisible(True)
         self.ocr_status.setText("正在本机识别课表，请稍候…")
         self.worker = OcrWorker(self.image_path)
+        self.worker.stage.connect(self.ocr_status.setText)
         self.worker.completed.connect(self.ocr_finished)
         self.worker.failed.connect(self.ocr_failed)
         self.worker.finished.connect(self.ocr_stopped)
@@ -144,6 +131,20 @@ class OcrMixin:
     def ocr_stopped(self):
         self.ocr_button.setEnabled(True)
         self.ocr_progress.setVisible(False)
+        self.cancel_ocr_button.setVisible(False)
+
+    def cancel_ocr(self):
+        if self.worker:
+            self.worker.request_cancel()
+
+    def start_prewarm(self):
+        def warm():
+            if getattr(self, "_closing", False) or (self.worker and self.worker.isRunning()):
+                return
+            self.prewarm_worker = OcrWorker(None)
+            self.prewarm_worker.failed.connect(lambda error: log.warning("ocr_prewarm_failed %s", error))
+            self.prewarm_worker.start()
+        QTimer.singleShot(400, warm)
 
     def ocr_finished(self, lines: list[str]):
         candidates = extract_candidates(lines)

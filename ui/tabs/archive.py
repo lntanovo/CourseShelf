@@ -2,40 +2,25 @@
 
 from __future__ import annotations
 
-import os
-import json
-import sys
-import subprocess
-import tempfile
-import threading
-from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QPixmap
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QComboBox, QFileDialog,
-    QCheckBox, QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-    QInputDialog, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QProgressBar,
-    QPushButton, QScrollArea, QSizePolicy, QSplitter, QTableWidget, QTableWidgetItem,
-    QRadioButton, QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QComboBox, QFileDialog,
+    QCheckBox, QHBoxLayout, QHeaderView, QLabel, QProgressBar,
+    QSizePolicy, QTableWidget, QTableWidgetItem,
+    QRadioButton, QVBoxLayout, QWidget,
 )
 
-from organizer import build_plan, extract_candidates, load_settings, local_ocr, planned_copy_path, save_root, save_settings
-from catalog import (add_category, count_contents, create_plan,
-                     disk_categories, import_course, is_managed, missing_paths, plan_paths,
-                     rename_category, restore_defaults, restore_missing, trash_category)
+from organizer import planned_copy_path
+from catalog import (disk_categories)
 from classifier import suggest
-from file_ops import Cancelled, PartialMoveError, transfer
-from runtime import (acquire_instance, configure_logging, install_exception_hooks, log,
-                     open_with_shell, report_exception)
-from dialogs import confirm
+from runtime import (open_with_shell)
 from inbox import build_inbox
-from tasks import BatchWorker, FileWorker, ScanWorker, TaskWorker, UndoWorker
+from tasks import BatchWorker
 
 
-from tasks import OcrWorker
-from ui.widgets import DropFileEdit, ImageDropZone, FileDropTree
+from ui.widgets import DropFileEdit
 
 class ArchiveMixin:
     def _make_archive_tab(self) -> QWidget:
@@ -62,7 +47,9 @@ class ArchiveMixin:
         self.inbox_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.inbox_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.inbox_table.currentCellChanged.connect(self.select_inbox_row)
-        self.inbox_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.inbox_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        for column, width in enumerate((120, 50, 140, 80, 100, 60, 130)):
+            self.inbox_table.setColumnWidth(column, width)
         card_layout.addWidget(self.inbox_table)
         actions = QHBoxLayout()
         actions.addWidget(self._button("应用全部高置信建议", self.apply_suggestions))
@@ -322,6 +309,7 @@ class ArchiveMixin:
             category.currentIndexChanged.connect(lambda _, r=row: self.row_category_changed(r))
             self.inbox_table.setCellWidget(row, 3, category)
             self.inbox_table.setItem(row, 4, QTableWidgetItem(item.reason))
+            self.inbox_table.item(row, 4).setToolTip(item.reason)
             mode = QComboBox()
             mode.addItem("复制", "copy")
             mode.addItem("移动", "move")
@@ -332,6 +320,7 @@ class ArchiveMixin:
             if not item.course or not item.category:
                 state += " · 需手选"
             self.inbox_table.setItem(row, 6, QTableWidgetItem(state + (" · " + item.error if item.error else "")))
+            self.inbox_table.item(row, 6).setToolTip(item.error or state)
         self.inbox_table.blockSignals(False)
         self._loading_inbox = False
         self.copy_button.setText(f"执行 {len(self.inbox_items)} 项")
@@ -398,6 +387,8 @@ class ArchiveMixin:
             if item.status != "ok" and item.suggested_course and item.suggested_category:
                 item.course, item.category = item.suggested_course, item.suggested_category
         self.render_inbox()
+        if 0 <= self._selected_inbox < len(self.inbox_items):
+            self.select_inbox_row(self._selected_inbox)
 
     def clear_inbox(self):
         if self.file_worker and self.file_worker.isRunning():
@@ -417,7 +408,7 @@ class ArchiveMixin:
 
     def archive_file(self, *, indices=None):
         try:
-            if self.undo_worker and self.undo_worker.isRunning():
+            if any(worker and worker.isRunning() for worker in (self.undo_worker, self.file_action_worker)):
                 self.archive_status.setText("请先等待撤销结束")
                 return
             if self.file_worker is not None and self.file_worker.isRunning():

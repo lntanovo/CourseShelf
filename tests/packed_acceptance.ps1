@@ -4,7 +4,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$sourceRelease = [IO.Path]::GetFullPath((Join-Path $Project 'dist\FilesOrganizer'))
+$sourceRelease = [IO.Path]::GetFullPath((Join-Path $Project 'dist\CourseShelf'))
 $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
 $sandbox = [IO.Path]::GetFullPath((Join-Path $tempRoot ('courseshelf-packed-' + [guid]::NewGuid().ToString('N'))))
 if (-not $sandbox.StartsWith($tempRoot.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
@@ -25,7 +25,7 @@ try {
     $emptyUser = Join-Path $relocated 'my-empty-folder'
     New-Item -ItemType Directory -Path $emptyUser | Out-Null
 
-    $appExe = Join-Path $relocated 'FilesOrganizer.exe'
+    $appExe = Join-Path $relocated 'CourseShelf.exe'
     $ocrJson = Join-Path $sandbox 'packed-ocr.json'
     $ocrSample = Join-Path $Project '课表.png'
     if ($UseFictionalSample -or -not (Test-Path -LiteralPath $ocrSample -PathType Leaf)) {
@@ -34,16 +34,23 @@ try {
         & $python (Join-Path $Project 'tests\smoke_demo.py') --make-sample $ocrSample
         if ($LASTEXITCODE -ne 0) { throw 'Could not create a fictional OCR sample' }
     }
-    $ocrProcess = Start-Process -FilePath $appExe -ArgumentList @('--verify-ocr', $ocrSample, $ocrJson) -WorkingDirectory $relocated -Wait -PassThru
+    $env:COURSESHELF_OFFLINE_TEST = '1'
+    $ocrProcess = Start-Process -FilePath $appExe -ArgumentList @('--verify-ocr', $ocrSample, $ocrJson) -WorkingDirectory $relocated -WindowStyle Hidden -Wait -PassThru
     if ($ocrProcess.ExitCode -ne 0) { throw "Relocated app OCR failed: $($ocrProcess.ExitCode)" }
     $ocr = Get-Content -LiteralPath $ocrJson -Raw -Encoding utf8 | ConvertFrom-Json
     if ($ocr.courses.Count -ne 9) { throw "Relocated app OCR count: $($ocr.courses.Count)" }
     Write-Host "Relocated exe OCR: $($ocr.courses.Count) courses"
+    $cacheJson = Join-Path $sandbox 'ocr-cache.json'
+    $cacheProcess = Start-Process -FilePath $appExe -ArgumentList @('--verify-ocr-cache', $ocrSample, $cacheJson) -WorkingDirectory $relocated -WindowStyle Hidden -Wait -PassThru
+    if ($cacheProcess.ExitCode -ne 0) { throw "Persistent OCR process failed: $($cacheProcess.ExitCode)" }
+    $cached = Get-Content -LiteralPath $cacheJson -Raw -Encoding utf8 | ConvertFrom-Json
+    if ($cached.courses.Count -ne 9) { throw 'Cached OCR result changed' }
+    Write-Host "Cached exe OCR: $($cached.seconds[0]) s then $($cached.seconds[1]) s"
 
     $archiveSource = Join-Path $sandbox 'test-document.txt'
     Set-Content -LiteralPath $archiveSource -Value 'archive test' -Encoding utf8
     $archiveJson = Join-Path $sandbox 'packed-archive.json'
-    $archiveProcess = Start-Process -FilePath $appExe -ArgumentList @('--verify-archive', $userRoot, $archiveSource, $archiveJson) -WorkingDirectory $relocated -Wait -PassThru
+    $archiveProcess = Start-Process -FilePath $appExe -ArgumentList @('--verify-archive', $userRoot, $archiveSource, $archiveJson) -WorkingDirectory $relocated -WindowStyle Hidden -Wait -PassThru
     if ($archiveProcess.ExitCode -ne 0) { throw "Relocated archive failed: $($archiveProcess.ExitCode)" }
     $archive = Get-Content -LiteralPath $archiveJson -Raw -Encoding utf8 | ConvertFrom-Json
     if (-not (Test-Path -LiteralPath $archive.target -PathType Leaf) -or -not (Test-Path -LiteralPath $archiveSource -PathType Leaf)) {
@@ -51,7 +58,7 @@ try {
     }
     Write-Host 'Relocated exe archive: test file copied into user library; source retained'
 
-    $process = Start-Process -FilePath $appExe -WorkingDirectory $relocated -PassThru
+    $process = Start-Process -FilePath $appExe -WorkingDirectory $relocated -WindowStyle Hidden -PassThru
     Start-Sleep -Seconds 3
     $process.Refresh()
     if ($process.HasExited) { throw "Relocated GUI app exited unexpectedly: $($process.ExitCode)" }
@@ -61,12 +68,12 @@ try {
 
     $uninstallExe = Join-Path $relocated 'uninstall.exe'
     $reportJson = Join-Path $sandbox 'uninstall-report.json'
-    $reportProcess = Start-Process -FilePath $uninstallExe -ArgumentList @('--report', $reportJson) -WorkingDirectory $relocated -Wait -PassThru
+    $reportProcess = Start-Process -FilePath $uninstallExe -ArgumentList @('--report', $reportJson) -WorkingDirectory $relocated -WindowStyle Hidden -Wait -PassThru
     if ($reportProcess.ExitCode -ne 0) { throw 'Relocated uninstaller report failed' }
     $report = Get-Content -LiteralPath $reportJson -Raw -Encoding utf8 | ConvertFrom-Json
     if ($report.owned.Count -lt 100) { throw "Unexpected release manifest size: $($report.owned.Count)" }
     $executeJson = Join-Path $sandbox 'uninstall-execute.json'
-    $uninstallProcess = Start-Process -FilePath $uninstallExe -ArgumentList @('--execute', $executeJson, '--clear-settings', '--self-cleanup') -WorkingDirectory $relocated -Wait -PassThru
+    $uninstallProcess = Start-Process -FilePath $uninstallExe -ArgumentList @('--execute', $executeJson, '--clear-settings', '--self-cleanup') -WorkingDirectory $relocated -WindowStyle Hidden -Wait -PassThru
     if ($uninstallProcess.ExitCode -ne 0) { throw 'Relocated uninstaller execution failed' }
     Start-Sleep -Seconds 4
     $done = Get-Content -LiteralPath $executeJson -Raw -Encoding utf8 | ConvertFrom-Json
