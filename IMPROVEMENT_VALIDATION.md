@@ -43,3 +43,8 @@ Relocated uninstall: 310 owned files removed; user material and empty folder pre
 
 执行 tests/verify_milestone.ps1 -Milestone m2。13 项测试、离线冒烟、打包与搬移验收全通过（原始日志 m2-*.log）。20 项中 18 成功/2 待手选，3 组同名保留两个；中途取消后无 partial 文件；20 项 PermissionError 注入逐项失败并可全部重试。收件箱替换后选中行同步错误由冒烟发现并修复，修复后重跑全套。默认复制，批次与行内均可显式选择移动。
 
+
+## M3 索引与搜索（通过）
+
+执行 tests/verify_milestone.ps1 -Milestone m3。15 项测试、离线冒烟、打包与搬移验收全通过。10 门课 × 50 文件：删除 index.db 后重启后台恢复；外部改名刷新无幽灵记录；损坏 SQLite 缓存移存后重建。修复 SQL LIKE 转义与取消扫描连接释放，并重跑。文件缓存与持久历史分库，历史表已建立。完整日志 m3-*.log。
+

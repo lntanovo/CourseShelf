@@ -226,6 +226,41 @@ class ImprovementTests(unittest.TestCase):
         self.assertEqual(sum(item.status == "ok" for item in window.inbox_items), 18)
         window.close()
 
+    def test_index_rebuild_rename_and_corruption(self):
+        from library_index import index_path, scan, search
+        create_plan(self.root, "秋季", [f"课程{i}" for i in range(10)])
+        for folder in self.root.glob("秋季/*/课件"):
+            for number in range(50):
+                (folder / f"讲义{number}.txt").write_text(str(number))
+        self.assertEqual(scan(self.root), 500)
+        self.assertEqual(len(search(self.root, "讲义", course="课程1")), 50)
+        index_path().unlink()
+        self.assertEqual(scan(self.root), 500)
+        old = self.root / "秋季/课程1/课件/讲义1.txt"
+        old.rename(old.with_name("renamed.txt"))
+        scan(self.root)
+        self.assertFalse(any(record["rel_path"].endswith("/讲义1.txt") for record in search(self.root, course="课程1")))
+        self.assertEqual(len(search(self.root, "renamed")), 1)
+        index_path().write_bytes(b"broken sqlite cache")
+        self.assertEqual(scan(self.root), 500)
+        self.assertEqual(len(search(self.root, "renamed")), 1)
+        self.assertEqual(search(self.root, "%"), [])
+
+    def test_index_ui_auto_rebuild(self):
+        from library_index import index_path
+        create_plan(self.root, "秋季", ["数学"])
+        (self.root / "秋季/数学/课件/search-me.txt").write_text("cached")
+        for _ in range(2):
+            window = MainWindow()
+            window.root_edit.setText(str(self.root))
+            window.root_changed()
+            wait_worker(window.scan_worker)
+            window.search_edit.setText("search-me")
+            window.search_files()
+            self.assertEqual(window.files_table.rowCount(), 1)
+            window.close()
+            index_path().unlink()
+
 
 if __name__ == "__main__":
     unittest.main()

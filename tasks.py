@@ -94,3 +94,21 @@ class BatchWorker(TaskWorker):
             self.item_done.emit(index, result)
         self.progress.emit(100)
         self.completed.emit(summary)
+
+
+class ScanWorker(TaskWorker):
+    completed = Signal(int)
+
+    def __init__(self, root):
+        super().__init__()
+        self.root = Path(root)
+
+    def run(self):
+        from library_index import scan
+        try:
+            self.completed.emit(scan(self.root, lambda: self.cancel_requested, self.progress.emit))
+        except Cancelled:
+            pass
+        except Exception as exc:
+            log.exception("index_scan_failed root=%s", self.root)
+            self.failed.emit(str(exc))

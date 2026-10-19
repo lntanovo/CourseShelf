@@ -31,7 +31,7 @@ from runtime import (acquire_instance, configure_logging, install_exception_hook
                      open_with_shell, report_exception)
 from dialogs import confirm
 from inbox import build_inbox
-from tasks import BatchWorker, FileWorker, TaskWorker
+from tasks import BatchWorker, FileWorker, ScanWorker, TaskWorker
 
 
 class OcrWorker(TaskWorker):
@@ -188,6 +188,8 @@ class MainWindow(QMainWindow):
         self.inbox_items = []
         self._loading_inbox = False
         self._selected_inbox = -1
+        self.scan_worker = None
+        self._scan_pending = False
         self.last_target: Path | None = None
         self.current_directory: Path | None = None
         self.tree_items: dict[Path, QTreeWidgetItem] = {}
@@ -560,6 +562,23 @@ class MainWindow(QMainWindow):
         files_layout.setContentsMargins(0, 0, 0, 0)
         self.files_title = QLabel("文件 · 0 个")
         files_layout.addWidget(self.files_title)
+        search_row = QHBoxLayout()
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("搜索文件名（全资料目录）")
+        self.search_course = QLineEdit()
+        self.search_course.setPlaceholderText("课程筛选")
+        self.search_category = QLineEdit()
+        self.search_category.setPlaceholderText("分类筛选")
+        self.search_timer = QTimer(self)
+        self.search_timer.setSingleShot(True)
+        self.search_timer.setInterval(180)
+        self.search_timer.timeout.connect(self.search_files)
+        for widget in (self.search_edit, self.search_course, self.search_category):
+            widget.textChanged.connect(lambda: self.search_timer.start())
+            search_row.addWidget(widget)
+        files_layout.addLayout(search_row)
+        self.index_status = QLabel("索引尚未扫描")
+        files_layout.addWidget(self.index_status)
         self.files_table = QTableWidget(0, 3)
         self.files_table.setHorizontalHeaderLabels(["文件名", "大小", "修改时间"])
         self.files_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -647,6 +666,57 @@ class MainWindow(QMainWindow):
         self.refresh_missing()
         self.refresh_targets()
         self.refresh_manage_categories()
+
+        self.start_index_scan()
+
+    def start_index_scan(self):
+        root = self.root_path()
+        if root is None:
+            return
+        if self.scan_worker and self.scan_worker.isRunning():
+            self._scan_pending = True
+            if self.scan_worker.root != root:
+                self.scan_worker.request_cancel()
+            return
+        self._scan_pending = False
+        self.index_status.setText("正在后台扫描文件索引…")
+        self.scan_worker = ScanWorker(root)
+        self.scan_worker.completed.connect(lambda count: self.index_status.setText(f"索引已更新：{count} 个文件"))
+        self.scan_worker.completed.connect(lambda _: self.search_files() if self.has_search() else None)
+        self.scan_worker.failed.connect(lambda error: self.index_status.setText("索引扫描失败：" + error))
+        self.scan_worker.finished.connect(self.index_scan_stopped)
+        self.scan_worker.start()
+
+    def index_scan_stopped(self):
+        if self._scan_pending and not getattr(self, "_closing", False):
+            self.start_index_scan()
+
+    def has_search(self):
+        return any(widget.text().strip() for widget in (self.search_edit, self.search_course, self.search_category))
+
+    def search_files(self):
+        root = self.root_path()
+        if root is None:
+            return
+        if not self.has_search():
+            self.show_files(self.current_directory or root, remember=False)
+            return
+        from library_index import search
+        try:
+            rows = search(root, self.search_edit.text().strip(), self.search_course.text().strip(), self.search_category.text().strip())
+            self.files_table.setRowCount(len(rows))
+            for row, record in enumerate(rows):
+                path = root / record["rel_path"]
+                name = QTableWidgetItem(record["rel_path"])
+                name.setData(Qt.ItemDataRole.UserRole, str(path))
+                self.files_table.setItem(row, 0, name)
+                self.files_table.setItem(row, 1, QTableWidgetItem(str(record["size"])))
+                self.files_table.setItem(row, 2, QTableWidgetItem(datetime.fromtimestamp(record["mtime_ns"] / 1e9).strftime("%Y-%m-%d %H:%M")))
+            self.files_title.setText(f"搜索结果 · {len(rows)} 个（最多 500）")
+        except Exception as exc:
+            log.exception("search_failed")
+            self.index_status.setText("索引不可用，正在重建：" + str(exc))
+            self.start_index_scan()
 
     def _load_tree(self, root: Path):
         self.folder_tree.blockSignals(True)
@@ -1387,7 +1457,11 @@ class MainWindow(QMainWindow):
             self.archive_status.setText("目标分类文件夹不存在，请先生成目录。")
 
     def closeEvent(self, event):
-        workers = [worker for worker in (self.worker, self.file_worker)
+        self._scan_pending = False
+        if self.scan_worker and self.scan_worker.isRunning():
+            self.scan_worker.request_cancel()
+            self.scan_worker.wait(1000)
+        workers = [worker for worker in (self.worker, self.file_worker, self.scan_worker)
                    if worker is not None and worker.isRunning()]
         if workers:
             if not getattr(self, "_closing", False) and not confirm(self, "退出 CourseShelf", "取消后台任务并退出？已完成的文件会保留。", "取消任务并退出"):
@@ -1400,6 +1474,7 @@ class MainWindow(QMainWindow):
                 worker.finished.connect(self.close)
             event.ignore()
             return
+        self._closing = True
         super().closeEvent(event)
 
 
