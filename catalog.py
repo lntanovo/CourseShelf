@@ -19,6 +19,15 @@ SCHEMA_VERSION = 1
 log = logging.getLogger("courseshelf")
 
 
+def _audit(root, kind, *, src=None, dst=None, result="ok", error="", batch_id=None):
+    from history import record
+    try:
+        record(root, kind, src=src, dst=dst, result=result, error=error, batch_id=batch_id)
+    except Exception:
+        # Never lose successful folder registrations because auxiliary history failed.
+        log.exception("catalog_history_failed kind=%s src=%s dst=%s", kind, src, dst)
+
+
 class CatalogError(ValueError):
     pass
 
@@ -192,6 +201,7 @@ def create_plan(root: Path, semester: str, courses: list[str]) -> tuple[int, int
     semester_path, items, paths = plan_paths(root, semester, courses)
     previously_existing = {course_path for course_path, _ in items if course_path.is_dir()}
     created = existing = 0
+    batch_id = uuid.uuid4().hex
     failures = []
     for path in paths:
         try:
@@ -204,6 +214,7 @@ def create_plan(root: Path, semester: str, courses: list[str]) -> tuple[int, int
             else:
                 path.mkdir()  # Parent must already exist in the plan.
                 created += 1
+                _audit(root, "mkdir", dst=path, batch_id=batch_id)
         except (OSError, CatalogError) as exc:
             failures.append(f"{path}: {exc}")
     for course_path, categories in items:
@@ -247,6 +258,7 @@ def add_category(root: Path, semester: str, course: str, value: str) -> Path:
         raise CatalogError("请先将课程目录纳入管理")
     destination = course_path / name
     destination.mkdir()
+    _audit(root, "mkdir", dst=destination)
     record["categories"].append(name)
     save_catalog(root, data)
     return destination
@@ -278,6 +290,7 @@ def rename_category(root: Path, semester: str, course: str, old: str, value: str
         source.rename(destination)
     record["categories"][record["categories"].index(old)] = name
     save_catalog(root, data)
+    _audit(root, "rename", src=source, dst=destination)
     return destination
 
 
@@ -299,6 +312,7 @@ def trash_category(root: Path, semester: str, course: str, category: str) -> Non
     log.info("trash_category path=%s", path)
     record["categories"].remove(category)
     save_catalog(root, data)
+    _audit(root, "trash", src=path)
 
 
 def restore_defaults(root: Path, semester: str, course: str) -> list[Path]:
@@ -316,6 +330,7 @@ def restore_defaults(root: Path, semester: str, course: str) -> list[Path]:
             if not path.exists():
                 path.mkdir()
                 created.append(path)
+                _audit(root, "mkdir", dst=path)
             if name not in record["categories"]:
                 record["categories"].append(name)
         except (OSError, ValueError) as exc:
@@ -360,5 +375,6 @@ def restore_missing(root: Path, path: Path) -> list[Path]:
         current = current.parent
     for folder in reversed(missing):
         folder.mkdir()
+        _audit(root, "mkdir", dst=folder)
     log.info("restore_missing path=%s created=%s", path, len(missing))
     return list(reversed(missing))

@@ -48,3 +48,8 @@ Relocated uninstall: 310 owned files removed; user material and empty folder pre
 
 执行 tests/verify_milestone.ps1 -Milestone m3。15 项测试、离线冒烟、打包与搬移验收全通过。10 门课 × 50 文件：删除 index.db 后重启后台恢复；外部改名刷新无幽灵记录；损坏 SQLite 缓存移存后重建。修复 SQL LIKE 转义与取消扫描连接释放，并重跑。文件缓存与持久历史分库，历史表已建立。完整日志 m3-*.log。
 
+
+## M4 历史、撤销、去重（通过）
+
+执行 tests/verify_milestone.ps1 -Milestone m4。17 项测试、冒烟、打包及搬移验收通过。记录逐项 copy/move 及目录操作和撤销；目标提交时复用流式 SHA-256，移动删除来源前先存校验记录。复制撤销走回收站；目标被修改、原来源被占用、重复撤销均拒绝。移动撤销保持原文件名（即使归档时加过序号）。同名同内容跳过，同名不同内容保留两个。非同名内容查重是可选项，本轮未实现。目录审计写失败写入日志，仍优先保证成功目录登记清单。原始输出 m4-*.log。
+

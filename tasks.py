@@ -9,7 +9,7 @@ from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 
 from catalog import writable_catalog
-from file_ops import Cancelled, PartialMoveError, transfer
+from file_ops import Cancelled, PartialMoveError, _sha256, transfer
 from inbox import linked
 from runtime import log, report_exception
 
@@ -61,7 +61,11 @@ class BatchWorker(TaskWorker):
         for offset, index in enumerate(self.indices):
             item = self.items[index]
             result = {"status": "skipped", "error": "", "target": ""}
+            operation_id = None
+            receipt = {}
             try:
+                from history import record, update
+                operation_id = record(self.root, item.mode, batch_id=self.batch_id, src=item.source, result="pending")
                 if self.cancel_requested:
                     raise Cancelled("批次已取消；未处理项来源保持不变")
                 writable_catalog(self.root)
@@ -77,8 +81,15 @@ class BatchWorker(TaskWorker):
                     raise ValueError("资料总目录内的原有文件不能作为移动来源；请选择复制")
                 if self.conflict == "skip" and (destination / item.source.name).exists():
                     raise Cancelled("同名目标已存在，按策略跳过")
+                same_name = destination / item.source.name
+                if same_name.is_file() and not linked(same_name) and item.source.is_file():
+                    if same_name.stat().st_size == item.source.stat().st_size and _sha256(same_name, lambda: self.cancel_requested) == _sha256(item.source, lambda: self.cancel_requested):
+                        raise Cancelled("该文件已存在于 " + str(same_name) + "；同名同内容，默认跳过")
                 target = transfer(item.source, destination, root=self.root, mode=item.mode,
                                   cancelled=lambda: self.cancel_requested,
+                                  receipt=receipt,
+                                  on_commit=lambda path, checksum, size: update(operation_id, dst=path, sha256=checksum, size=size,
+                                                                               result="ok" if item.mode == "copy" else "partial"),
                                   progress=lambda p: self.progress.emit(int((offset + p / 100) * 100 / max(len(self.indices), 1))))
                 result.update(status="ok", target=str(target))
             except Cancelled as exc:
@@ -90,6 +101,13 @@ class BatchWorker(TaskWorker):
                 if not isinstance(exc, (OSError, ValueError)):
                     report_exception(*sys.exc_info())
                 result.update(status="failed", error=str(exc))
+            if operation_id is not None:
+                try:
+                    update(operation_id, dst=result["target"] or receipt.get("target"), sha256=receipt.get("sha256"),
+                           size=receipt.get("size"), result="partial" if receipt and result["status"] != "ok" else result["status"], error=result["error"])
+                except Exception as exc:
+                    log.exception("history_update_failed operation=%s", operation_id)
+                    result.update(status="failed", error="文件结果已保留；操作历史写入失败：" + str(exc), target=receipt.get("target", ""))
             summary[result["status"]] += 1
             self.item_done.emit(index, result)
         self.progress.emit(100)
@@ -111,4 +129,20 @@ class ScanWorker(TaskWorker):
             pass
         except Exception as exc:
             log.exception("index_scan_failed root=%s", self.root)
+            self.failed.emit(str(exc))
+
+
+class UndoWorker(TaskWorker):
+    completed = Signal(str)
+
+    def __init__(self, root, operation_id):
+        super().__init__()
+        self.root, self.operation_id = root, operation_id
+
+    def run(self):
+        from history import undo
+        try:
+            self.completed.emit(undo(self.root, self.operation_id, lambda: self.cancel_requested))
+        except Exception as exc:
+            log.exception("undo_failed operation=%s", self.operation_id)
             self.failed.emit(str(exc))

@@ -36,11 +36,19 @@ def transfer(
     source: Path, destination_dir: Path, *, root: Path, mode: str = "copy",
     progress: Callable[[int], None] | None = None,
     cancelled: Callable[[], bool] | None = None,
+    receipt: dict | None = None,
+    on_commit: Callable[[Path, str, int], None] | None = None,
+    target_name: str | None = None,
+    conflict: str = "keep",
 ) -> Path:
     source, destination_dir, root = map(Path, (source, destination_dir, root))
     log.info("transfer_start src=%s dst=%s mode=%s", source, destination_dir, mode)
     if mode not in {"copy", "move"}:
         raise ValueError("操作方式只能是复制或移动")
+    if target_name is not None and (Path(target_name).name != target_name or target_name in {"", ".", ".."}):
+        raise ValueError("目标文件名无效")
+    if any(path.is_symlink() or path.is_junction() for path in (source, destination_dir, root, *destination_dir.parents)):
+        raise ValueError("文件操作路径不能经过符号链接或目录联接")
     if not source.is_file() or source.is_symlink():
         raise ValueError("来源必须是存在的普通文件，不能是符号链接")
     if not root.is_dir() or root.is_symlink() or not destination_dir.is_dir() or destination_dir.is_symlink():
@@ -79,7 +87,8 @@ def transfer(
         log.info("transfer_verified src=%s size=%s sha256=%s", source, initial.st_size, digest.hexdigest())
         number = 0
         while True:
-            filename = source.name if number == 0 else f"{source.stem} ({number}){source.suffix}"
+            name = Path(target_name or source.name)
+            filename = name.name if number == 0 else f"{name.stem} ({number}){name.suffix}"
             target = destination_dir / filename
             try:
                 # Windows rename is atomic within the destination directory and
@@ -88,7 +97,13 @@ def transfer(
                 committed = True
                 break
             except FileExistsError:
+                if conflict == "error":
+                    raise FileExistsError("原路径已被占用，不能覆盖：" + str(target))
                 number += 1
+        if receipt is not None:
+            receipt.update(target=str(target), sha256=digest.hexdigest(), size=initial.st_size)
+        if on_commit:
+            on_commit(target, digest.hexdigest(), initial.st_size)
         if mode == "move":
             try:
                 source.unlink()

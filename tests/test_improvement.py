@@ -193,14 +193,15 @@ class ImprovementTests(unittest.TestCase):
             wait_worker(worker)
         self.assertEqual([r["status"] for r in results], ["ok"] + ["skipped"] * 19)
         self.assertFalse(list(self.root.rglob(".courseshelf-partial-*")))
-        for item in items:
+        for index, item in enumerate(items):
             self.assertTrue(item.source.exists())
             item.course, item.category = "秋季/数学", "课件"
+            item.source.write_text(f"retry-{index}")
         with patch("tasks.transfer", side_effect=PermissionError("read-only target")):
             _, summary = self.run_batch(items)
         self.assertEqual(summary["failed"], 20)
         _, summary = self.run_batch(items)
-        self.assertEqual(summary["ok"], 20)
+        self.assertEqual(summary, {"ok": 20, "skipped": 0, "failed": 0})
 
     def test_inbox_folder_expansion_and_ui(self):
         from inbox import build_inbox
@@ -260,6 +261,56 @@ class ImprovementTests(unittest.TestCase):
             self.assertEqual(window.files_table.rowCount(), 1)
             window.close()
             index_path().unlink()
+
+    def test_history_undo_and_dedup(self):
+        from history import operations, undo
+        from library_index import index_path, scan
+        items = self.prepare_batch()[:1]
+        results, _ = self.run_batch(items)
+        target = Path(results[0][1]["target"])
+        operation = next(row for row in operations(self.root) if row["kind"] == "copy")
+        scan(self.root)
+        index_path().unlink()
+        self.assertIn("撤销完成", undo(self.root, operation["id"]))
+        self.assertFalse(target.exists())
+        self.assertTrue(items[0].source.exists())
+        with self.assertRaisesRegex(ValueError, "已撤销"):
+            undo(self.root, operation["id"])
+        results, _ = self.run_batch(items)
+        target = Path(results[0][1]["target"])
+        operation = next(row for row in operations(self.root) if row["kind"] == "copy")
+        target.write_text("changed target")
+        with self.assertRaisesRegex(ValueError, "SHA-256"):
+            undo(self.root, operation["id"])
+        self.assertEqual(target.read_text(), "changed target")
+        _, summary = self.run_batch(items)
+        self.assertEqual(summary["ok"], 1)  # same name, different content preserves both
+        _, summary = self.run_batch(items)
+        self.assertEqual(summary["ok"], 1)  # different target content still preserves both
+        self.assertTrue(any(row["kind"] == "undo" and row["result"] == "failed" for row in operations(self.root)))
+
+    def test_identical_skip_and_move_undo_original_name(self):
+        from history import operations, undo
+        items = self.prepare_batch()[:1]
+        _, first = self.run_batch(items)
+        _, duplicate = self.run_batch(items)
+        self.assertEqual((first["ok"], duplicate["skipped"]), (1, 1))
+        source = items[0].source
+        source.write_text("new content")
+        items[0].mode = "move"
+        results, summary = self.run_batch(items)
+        self.assertEqual(summary["ok"], 1)
+        target = Path(results[0][1]["target"])
+        self.assertIn("(1)", target.name)
+        self.assertFalse(source.exists())
+        operation = next(row for row in operations(self.root) if row["kind"] == "move")
+        source.write_text("occupied")
+        with self.assertRaisesRegex(ValueError, "占用"):
+            undo(self.root, operation["id"])
+        source.unlink()  # only a temporary test fixture
+        undo(self.root, operation["id"])
+        self.assertEqual(source.read_text(), "new content")
+        self.assertFalse(target.exists())
 
 
 if __name__ == "__main__":

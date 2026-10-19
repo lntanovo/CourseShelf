@@ -134,31 +134,31 @@ def main():
     window.file_worker.finished.connect(loop.quit)
     QTimer.singleShot(30000, loop.quit)
     loop.exec()
-    assert window.archive_status.text().startswith("复制成功"), window.archive_status.text()
+    assert "跳过 1" in window.archive_status.text(), window.archive_status.text()
     assert window.copy_button.isEnabled(), "copy button became disabled after successful copy"
     target = root / "2026秋季学期" / "通信原理" / "课件"
     assert (target / "讲义.txt").read_text(encoding="utf-8") == "original material"
-    assert (target / "讲义 (1).txt").read_text(encoding="utf-8") == "original material"
+    assert not (target / "讲义 (1).txt").exists(), "identical content should be skipped"
     assert source.read_text(encoding="utf-8") == "original material"
     with patch("os.startfile") as open_folder:
         window.open_destination()
         open_folder.assert_called_once_with(target)
     assert window.current_directory == target
-    assert window.files_table.rowCount() == 2
+    assert window.files_table.rowCount() == 1
     assert window.folder_tree.topLevelItemCount() == 1
     assert window.tree_items.get(target) is not None
     for tab, name in enumerate(("ocr", "generate", "archive")):
         window.tabs.setCurrentIndex(tab)
         app.processEvents()
         assert window.grab().save(str(work / f"ui-{name}.png"))
-    print("Copy: source retained, duplicate got unique name, prior target unchanged")
+    print("Copy: source retained, identical duplicate skipped, prior target unchanged")
 
     assert load_settings()["root"] == str(root)
     window.close()
     reopened = MainWindow()
     assert reopened.root_edit.text() == str(root)
     assert reopened.current_directory == target
-    assert reopened.files_table.rowCount() == 2
+    assert reopened.files_table.rowCount() == 1
     assert reopened.tree_items.get(target) is not None
     reopened.close()
     print("Restart: root, selected directory, and existing files restored")
