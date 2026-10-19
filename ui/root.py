@@ -57,7 +57,7 @@ class RootMixin:
             except OSError as exc:
                 self.root_status.setText("目录可用，但设置保存失败：" + str(exc))
         self.root_edit.setToolTip(str(root))
-        self.root_status.setText("资料直接保存在：" + str(root))
+        self.root_status.setText("本机资料库 · 默认复制，原文件保留")
         self.refresh_browser(preferred=preferred or str(root), remember=save)
 
     def show_about(self):
@@ -101,6 +101,8 @@ class RootMixin:
             return
         self._closing = True
         self.flush_view_settings()
+        if hasattr(self, "appearance_timer") and self.appearance_timer.isActive():
+            self.save_appearance()
         from services.ocr_process import stop
         stop()
         super().closeEvent(event)

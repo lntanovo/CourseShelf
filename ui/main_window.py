@@ -1,37 +1,42 @@
-"""Desktop UI for the local timetable and file organizer."""
-
+"""A quiet desktop shell with one workspace visible at a time."""
 from __future__ import annotations
 
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
-    QFrame, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-    QMainWindow, QMessageBox, QPushButton, QScrollArea, QSplitter, QTabWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QButtonGroup, QFrame, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
+    QMainWindow, QMessageBox, QPushButton, QScrollArea, QStyle, QTabWidget,
+    QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from organizer import load_settings
-from tasks import FileWorker
-
-
-from tasks import OcrWorker
+from tasks import FileWorker, OcrWorker
+from .appearance import AppearanceMixin, BackgroundCanvas
 from .root import RootMixin
 from .tabs.ocr import OcrMixin
 from .tabs.generate import GenerateMixin
 from .tabs.archive import ArchiveMixin
 from .tabs.browser import BrowserMixin
 from .tabs.history import HistoryMixin
-from .style import STYLE
 
-class MainWindow(RootMixin, OcrMixin, GenerateMixin, ArchiveMixin, BrowserMixin, HistoryMixin, QMainWindow):
+PAGES = {
+    0: ("课表与课程", "新学期，从一张课表开始。识别之后，核对课程名称。"),
+    1: ("生成目录", "给每门课程留一个位置。先预览，再确认创建。"),
+    2: ("整理资料", "把零散的文件，放回合适的课程。"),
+    3: ("操作记录", "查看整理结果，需要时安全撤销。"),
+    4: ("资料库", "浏览与搜索本机文件，双击即可打开。"),
+}
+
+
+class MainWindow(AppearanceMixin, RootMixin, OcrMixin, GenerateMixin, ArchiveMixin, BrowserMixin, HistoryMixin, QMainWindow):
     def __init__(self):
         super().__init__()
         from runtime import initialize_gui
         initialize_gui()
         self.setWindowTitle("CourseShelf")
-        self.resize(1380, 860)
-        self.setMinimumSize(1040, 680)
+        self.resize(1360, 880)
+        self.setMinimumSize(1040, 720)
         self.image_path: Path | None = None
         self.worker: OcrWorker | None = None
         self.file_worker: FileWorker | None = None
@@ -46,62 +51,115 @@ class MainWindow(RootMixin, OcrMixin, GenerateMixin, ArchiveMixin, BrowserMixin,
         self.current_directory: Path | None = None
         self.tree_items: dict[Path, QTreeWidgetItem] = {}
 
-        central = QWidget()
-        self.setCentralWidget(central)
-        toolbar = self.addToolBar("常用操作")
-        toolbar.setMovable(False)
-        for label, callback in (("选择资料目录", self.choose_root), ("导入课表", self.choose_image),
-                                ("刷新磁盘", self.refresh_browser), ("打开资料目录", self.open_root),
-                                ("帮助 / 关于", self.show_about)):
-            action = QAction(label, self)
-            action.triggered.connect(callback)
-            toolbar.addAction(action)
-        outer = QVBoxLayout(central)
-        outer.setContentsMargins(20, 16, 20, 16)
-        outer.setSpacing(14)
-
-        heading = QLabel("CourseShelf")
-        heading.setObjectName("heading")
-        outer.addWidget(heading)
-        description = QLabel("识别课表 → 核对课程 → 生成目录 → 整理资料。所有资料都保存在你选择的本机文件夹中。")
-        description.setObjectName("subtitle")
-        outer.addWidget(description)
-        outer.addWidget(self._make_root_card())
-
-        horizontal = QSplitter(Qt.Orientation.Horizontal)
-        horizontal.setChildrenCollapsible(False)
-        outer.addWidget(horizontal, 1)
-
+        self.canvas = BackgroundCanvas()
+        self.setCentralWidget(self.canvas)
+        shell = QHBoxLayout(self.canvas)
+        shell.setContentsMargins(20, 20, 24, 14)
+        shell.setSpacing(28)
+        shell.addWidget(self._make_sidebar())
+        workspace = QVBoxLayout()
+        workspace.setSpacing(16)
+        shell.addLayout(workspace, 1)
+        top = QHBoxLayout()
+        titles = QVBoxLayout()
+        titles.setSpacing(5)
+        self.page_heading = QLabel()
+        self.page_heading.setObjectName("heading")
+        self.page_description = QLabel()
+        self.page_description.setObjectName("subtitle")
+        self.page_description.setWordWrap(True)
+        titles.addWidget(self.page_heading)
+        titles.addWidget(self.page_description)
+        top.addLayout(titles, 1)
+        appearance = self._button("外观与背景", self.open_appearance)
+        appearance.setObjectName("quiet")
+        top.addWidget(appearance, alignment=Qt.AlignmentFlag.AlignTop)
+        workspace.addLayout(top)
+        workspace.addWidget(self._make_root_card())
         self.tabs = QTabWidget()
-        self.tabs.setMinimumWidth(470)
-        self.tabs.addTab(self._make_ocr_tab(), "1  识别与核对")
-        self.tabs.addTab(self._make_generate_tab(), "2  生成目录")
-        self.tabs.addTab(self._make_archive_tab(), "3  整理资料")
-        self.tabs.addTab(self._make_history_tab(), "4  操作记录")
-        horizontal.addWidget(self.tabs)
-        horizontal.addWidget(self._make_browser())
-        horizontal.setSizes([760, 580])
-        self.setStyleSheet(STYLE)
-        self.statusBar().showMessage("请选择资料总目录，或导入课表开始")
+        self.tabs.addTab(self._make_ocr_tab(), "课表与课程")
+        self.tabs.addTab(self._make_generate_tab(), "生成目录")
+        self.tabs.addTab(self._make_archive_tab(), "整理资料")
+        self.tabs.addTab(self._make_history_tab(), "操作记录")
+        self.tabs.addTab(self._make_browser(), "资料库")
+        self.tabs.tabBar().hide()
+        self.tabs.currentChanged.connect(self._page_changed)
+        workspace.addWidget(self.tabs, 1)
+        self._page_changed(0)
+        self.statusBar().showMessage("所有操作都在本机完成")
+        self.initialize_appearance()
 
         settings = load_settings()
         remembered = settings.get("root")
         if isinstance(remembered, str) and remembered:
+            self.root_edit.setText(remembered)
             if Path(remembered).is_dir():
-                self.root_edit.setText(remembered)
                 self.root_changed(save=False, preferred=settings.get("last_viewed"))
+                self.tabs.setCurrentIndex(2)
             else:
-                self.root_edit.setText(remembered)
-                self.root_status.setText("上次使用的资料目录已失效，请选择现有文件夹：" + remembered)
+                self.root_status.setText("上次的资料目录已失效，请重新选择文件夹。")
                 QTimer.singleShot(0, lambda: QMessageBox.warning(
                     self, "资料目录不可用", "上次使用的资料目录已不存在，请重新选择现有文件夹。\n" + remembered))
         else:
-            self.root_status.setText("尚未选择资料总目录。请选择一个已有的普通文件夹。")
+            self.root_status.setText("选择资料库后，即可开始整理。")
         self.refresh_targets()
+
+    def _make_sidebar(self):
+        sidebar = QFrame()
+        sidebar.setObjectName("sidebar")
+        sidebar.setFixedWidth(194)
+        layout = QVBoxLayout(sidebar)
+        layout.setContentsMargins(16, 26, 16, 18)
+        layout.setSpacing(8)
+        brand = QLabel("CourseShelf")
+        brand.setObjectName("brand")
+        layout.addWidget(brand)
+        tagline = QLabel("课程有序 · 学习从容")
+        tagline.setObjectName("muted")
+        layout.addWidget(tagline)
+        layout.addSpacing(30)
+        self.navigation = QButtonGroup(self)
+        self.nav_buttons = {}
+        for index, icon in ((2, QStyle.StandardPixmap.SP_FileDialogDetailedView),
+                            (4, QStyle.StandardPixmap.SP_DirIcon),
+                            (0, QStyle.StandardPixmap.SP_FileDialogContentsView),
+                            (1, QStyle.StandardPixmap.SP_FileDialogNewFolder),
+                            (3, QStyle.StandardPixmap.SP_FileDialogInfoView)):
+            if index == 0:
+                layout.addSpacing(20)
+                label = QLabel("新学期")
+                label.setObjectName("eyebrow")
+                layout.addWidget(label)
+            if index == 3:
+                layout.addSpacing(20)
+            button = QPushButton(PAGES[index][0])
+            button.setObjectName("nav")
+            button.setIcon(self.style().standardIcon(icon))
+            button.setCheckable(True)
+            button.clicked.connect(lambda checked=False, i=index: self.tabs.setCurrentIndex(i))
+            self.navigation.addButton(button, index)
+            self.nav_buttons[index] = button
+            layout.addWidget(button)
+        layout.addStretch()
+        about = self._button("关于 CourseShelf", self.show_about)
+        about.setObjectName("quiet")
+        layout.addWidget(about)
+        offline = QLabel("离线运行 · 资料留在本机")
+        offline.setObjectName("muted")
+        offline.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(offline)
+        return sidebar
+
+    def _page_changed(self, index):
+        title, description = PAGES[index]
+        self.page_heading.setText(title)
+        self.page_description.setText(description)
+        self.nav_buttons[index].setChecked(True)
 
     @staticmethod
     def _button(text: str, callback, primary: bool = False) -> QPushButton:
         button = QPushButton(text)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
         if primary:
             button.setObjectName("primary")
         button.clicked.connect(callback)
@@ -111,8 +169,8 @@ class MainWindow(RootMixin, OcrMixin, GenerateMixin, ArchiveMixin, BrowserMixin,
     def _card(title: str) -> tuple[QGroupBox, QVBoxLayout]:
         card = QGroupBox(title)
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(16, 22, 16, 16)
-        layout.setSpacing(10)
+        layout.setContentsMargins(20, 24, 20, 18)
+        layout.setSpacing(12)
         return card, layout
 
     @staticmethod
@@ -121,12 +179,11 @@ class MainWindow(RootMixin, OcrMixin, GenerateMixin, ArchiveMixin, BrowserMixin,
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.viewport().setStyleSheet("background-color: #f3f6fa;")
         body = QWidget()
         body.setObjectName("tabBody")
         layout = QVBoxLayout(body)
-        layout.setContentsMargins(10, 14, 10, 14)
-        layout.setSpacing(14)
+        layout.setContentsMargins(0, 0, 8, 8)
+        layout.setSpacing(16)
         scroll.setWidget(body)
         return scroll, layout
 
@@ -134,24 +191,23 @@ class MainWindow(RootMixin, OcrMixin, GenerateMixin, ArchiveMixin, BrowserMixin,
         card = QFrame()
         card.setObjectName("rootCard")
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(18, 14, 18, 14)
+        layout.setContentsMargins(16, 10, 12, 10)
+        layout.setSpacing(2)
         row = QHBoxLayout()
-        label = QLabel("当前资料总目录")
+        label = QLabel("资料库")
         label.setObjectName("sectionTitle")
         row.addWidget(label)
-        row.addStretch()
-        row.addWidget(self._button("选择 / 更换文件夹", self.choose_root))
-        row.addWidget(self._button("在资源管理器中打开", self.open_root))
-        layout.addLayout(row)
         self.root_edit = QLineEdit()
         self.root_edit.setObjectName("rootPath")
-        self.root_edit.setPlaceholderText("请选择已有的本机文件夹；也可粘贴完整路径并按 Enter")
+        self.root_edit.setPlaceholderText("选择已有文件夹，或粘贴本机路径并按 Enter")
         self.root_edit.editingFinished.connect(self.root_changed)
         self.root_edit.textChanged.connect(self.invalidate_preview)
-        layout.addWidget(self.root_edit)
+        row.addWidget(self.root_edit, 1)
+        row.addWidget(self._button("更换", self.choose_root))
+        row.addWidget(self._button("打开文件夹", self.open_root))
+        layout.addLayout(row)
         self.root_status = QLabel()
         self.root_status.setObjectName("muted")
         self.root_status.setWordWrap(True)
         layout.addWidget(self.root_status)
         return card
-

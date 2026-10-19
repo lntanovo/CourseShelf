@@ -58,6 +58,10 @@ try {
     }
     Write-Host 'Relocated exe archive: test file copied into user library; source retained'
 
+    @{ root = $userRoot; last_viewed = (Split-Path -Parent $archive.target) } | ConvertTo-Json | Set-Content -LiteralPath $settingsFile -Encoding utf8
+    $appearanceFile = Join-Path $env:FILES_ORGANIZER_CONFIG_DIR 'appearance.json'
+    @{ theme = 'ink'; background = $ocrSample; visibility = 50 } | ConvertTo-Json | Set-Content -LiteralPath $appearanceFile -Encoding utf8
+    $backgroundHash = (Get-FileHash -LiteralPath $ocrSample -Algorithm SHA256).Hash
     $process = Start-Process -FilePath $appExe -WorkingDirectory $relocated -WindowStyle Hidden -PassThru
     Start-Sleep -Seconds 3
     $process.Refresh()
@@ -81,9 +85,14 @@ try {
     if (Test-Path -LiteralPath $appExe) { throw 'App exe survived uninstall' }
     if (Test-Path -LiteralPath $uninstallExe) { throw 'Uninstaller self cleanup did not complete' }
     if (Test-Path -LiteralPath $settingsFile) { throw 'Optional settings cleanup failed' }
+    if (Test-Path -LiteralPath $appearanceFile) { throw 'Optional appearance cleanup failed' }
+    if (-not (Test-Path -LiteralPath $ocrSample -PathType Leaf) -or (Get-FileHash -LiteralPath $ocrSample -Algorithm SHA256).Hash -ne $backgroundHash) {
+        throw 'Original background image was changed or removed'
+    }
     if (-not (Test-Path -LiteralPath $userFile -PathType Leaf)) { throw 'User material was deleted' }
     if (-not (Test-Path -LiteralPath $emptyUser -PathType Container)) { throw 'User-created empty directory was deleted' }
     Write-Host "Relocated uninstall: $($done.owned.Count) owned files removed; user material and empty folder preserved"
+    Write-Host 'Appearance: saved ink theme and local background launch; preferences cleared, original image preserved'
 }
 finally {
     if (Test-Path -LiteralPath $sandbox) {

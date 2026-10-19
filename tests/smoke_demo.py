@@ -53,7 +53,7 @@ def make_sample(path: Path) -> None:
 
 
 def main():
-    work = Path(tempfile.mkdtemp(prefix="FilesOrganizerDemo-"))
+    work = Path(tempfile.mkdtemp(prefix="FilesOrganizerDemo-")).resolve()
     sample = work / "sample-timetable.png"
     make_sample(sample)
     root = work / "资料"

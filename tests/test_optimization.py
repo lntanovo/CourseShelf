@@ -30,7 +30,7 @@ APP = QApplication.instance() or QApplication([])
 class OptimizationTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="courseshelf-accept-")
-        self.base = Path(self.temp.name)
+        self.base = Path(self.temp.name).resolve()
         self.root = self.base / "资料"
         self.root.mkdir()
         os.environ["FILES_ORGANIZER_CONFIG_DIR"] = str(self.base / "settings")

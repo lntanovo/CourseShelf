@@ -38,7 +38,7 @@ def wait_worker(worker, timeout=30000):
 class ImprovementTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="courseshelf-improve-")
-        self.base = Path(self.temp.name)
+        self.base = Path(self.temp.name).resolve()  # Windows runners may return an 8.3 TEMP path.
         self.root = self.base / "library"
         self.root.mkdir()
         self.environment = patch.dict(os.environ, {"FILES_ORGANIZER_CONFIG_DIR": str(self.base / "settings")})

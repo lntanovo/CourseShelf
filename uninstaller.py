@@ -25,7 +25,7 @@ def settings_file() -> Path:
 
 
 def settings_files() -> list[Path]:
-    paths = [settings_file()]
+    paths = [settings_file(), settings_file().parent / "appearance.json"]
     if not os.environ.get("FILES_ORGANIZER_CONFIG_DIR"):
         # Explicitly clearing preferences includes the previous edition's migration source.
         paths.append(Path(os.environ.get("LOCALAPPDATA", Path.home())) / "FilesOrganizerDemo/settings.json")
@@ -154,7 +154,7 @@ def main() -> int:
                 return 0
         if _box("卸载 CourseShelf", f"便携版没有系统安装记录。\n发布文件夹：{folder}\n设置文件：{settings}\n\n删除 {len(report['owned'])} 个清单内的程序文件？\n用户资料文件夹及其中资料会保留。请先关闭 CourseShelf。", 0x124) != 6:
             return 0
-        clear = _box("路径设置", "同时清除本机保存的资料目录路径设置？\n这不会删除资料。", 0x124) == 6
+        clear = _box("本机设置", "同时清除本机保存的路径、主题与背景设置？\n这不会删除资料或原背景图片。", 0x124) == 6
         result = uninstall(folder, clear_settings=clear, self_cleanup=True)
         _box("卸载结果", f"已清理 {len(result['owned']) - len(result['failed'])} 个程序文件。\n跳过改动文件 {len(result['modified'])} 个；失败 {len(result['failed'])} 个。\n用户资料未删除。")
         return 0 if not result["failed"] else 1

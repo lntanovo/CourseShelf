@@ -17,7 +17,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from organizer import settings_path
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 log = logging.getLogger("courseshelf")
 
 _gui_initialized = False
@@ -27,6 +27,7 @@ def initialize_gui():
     global _gui_initialized
     if _gui_initialized:
         return
+    QApplication.instance().setStyle("Fusion")
     font = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts/msyh.ttc"
     if font.is_file():
         QFontDatabase.addApplicationFont(str(font))

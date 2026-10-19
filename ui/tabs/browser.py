@@ -10,7 +10,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QShortcut
 from PySide6.QtWidgets import QMenu, QFileIconProvider
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QComboBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+    QAbstractItemView, QApplication, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
     QInputDialog, QSizePolicy, QSplitter, QTableWidget, QTableWidgetItem,
     QTreeWidgetItem, QVBoxLayout, QWidget,
 )
@@ -22,7 +22,7 @@ from dialogs import confirm
 from tasks import ScanWorker
 
 
-from ui.widgets import FileDropTree
+from ui.widgets import FileDropTree, SoftComboBox as QComboBox
 
 class BrowserMixin:
     def _make_browser(self) -> QWidget:
@@ -37,7 +37,7 @@ class BrowserMixin:
         self.view_settings_timer.setSingleShot(True)
         self.view_settings_timer.setInterval(350)
         self.view_settings_timer.timeout.connect(self.flush_view_settings)
-        card, layout = self._card("资料浏览 · 磁盘上的真实文件")
+        card, layout = self._card("我的资料")
         card.setMinimumWidth(460)
         row = QHBoxLayout()
         self.browser_path_label = QLabel("尚未选择资料目录")
@@ -52,21 +52,25 @@ class BrowserMixin:
         self.missing_label.setObjectName("warning")
         self.missing_label.setWordWrap(True)
         layout.addWidget(self.missing_label)
-        missing_row = QHBoxLayout()
+        self.missing_tools = QWidget()
+        missing_row = QHBoxLayout(self.missing_tools)
+        missing_row.setContentsMargins(0, 0, 0, 0)
         self.missing_combo = QComboBox()
         self.missing_combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         missing_row.addWidget(self.missing_combo, 1)
         missing_row.addWidget(self._button("重建选中空目录", self.restore_missing_ui))
-        layout.addLayout(missing_row)
-        panes = QSplitter(Qt.Orientation.Vertical)
+        layout.addWidget(self.missing_tools)
+        self.missing_tools.hide()
+        panes = QSplitter(Qt.Orientation.Horizontal)
         panes.setChildrenCollapsible(False)
         layout.addWidget(panes, 1)
 
         tree_box = QWidget()
         tree_layout = QVBoxLayout(tree_box)
         tree_layout.setContentsMargins(0, 0, 0, 0)
-        tree_layout.addWidget(QLabel("文件夹 · 学期 → 课程 → 分类"))
+        tree_layout.addWidget(QLabel("文件夹"))
         self.folder_tree = FileDropTree()
+        self.folder_tree.setMinimumWidth(190)
         self.folder_tree.setHeaderHidden(True)
         self.folder_tree.itemExpanded.connect(self.expand_tree_item)
         self.folder_tree.currentItemChanged.connect(self.on_tree_selected)
@@ -102,7 +106,7 @@ class BrowserMixin:
         self.files_table.setSortingEnabled(True)
         self.files_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.files_table.customContextMenuRequested.connect(self.file_context_menu)
-        for key, callback in (("F5", self.refresh_browser), ("Ctrl+F", self.search_edit.setFocus),
+        for key, callback in (("F5", self.refresh_browser), ("Ctrl+F", self.focus_search),
                               ("Ctrl+O", self.open_selected_file), ("Delete", lambda: self.change_selected_file("trash"))):
             shortcut = QShortcut(key, self.files_table if key == "Delete" else self)
             if key == "Delete":
@@ -119,8 +123,12 @@ class BrowserMixin:
         self.files_table.doubleClicked.connect(self.open_selected_file)
         files_layout.addWidget(self.files_table)
         panes.addWidget(files_box)
-        panes.setSizes([320, 270])
+        panes.setSizes([260, 720])
         return card
+
+    def focus_search(self):
+        self.tabs.setCurrentIndex(4)
+        self.search_edit.setFocus()
 
     def refresh_browser(self, *_args, preferred=None, remember=True):
         from catalog import catalog_snapshot

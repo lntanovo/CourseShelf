@@ -15,6 +15,7 @@ from catalog import (add_category, create_plan,
                      disk_categories, import_course, is_managed, missing_paths, plan_paths,
                      restore_defaults, restore_missing)
 from dialogs import confirm
+from ui.widgets import Disclosure
 
 
 
@@ -37,14 +38,14 @@ class GenerateMixin:
         card_layout.addLayout(row)
         card_layout.addWidget(QLabel("预览：学期 / 课程 / 课件、作业、复习资料、其他"))
         self.preview = QListWidget()
-        self.preview.setMinimumHeight(260)
+        self.preview.setMinimumHeight(220)
         card_layout.addWidget(self.preview)
         self.generate_status = QLabel("请先核对课程，并选择一个已有的资料总目录。")
         self.generate_status.setWordWrap(True)
         card_layout.addWidget(self.generate_status)
         layout.addWidget(card)
         manage, manage_layout = self._card("管理当前课程分类")
-        manage_layout.addWidget(QLabel("选择右侧目录树中的课程或分类，也可使用第 ③ 步的课程下拉框。"))
+        manage_layout.addWidget(QLabel("在资料库选择课程，或使用整理资料页的课程下拉框。"))
         self.manage_path = QLabel("尚未选择课程")
         self.manage_path.setWordWrap(True)
         manage_layout.addWidget(self.manage_path)
@@ -62,7 +63,8 @@ class GenerateMixin:
         buttons.addStretch()
         manage_layout.addLayout(buttons)
         manage_layout.addWidget(self._button("编辑课程别名", self.edit_aliases_ui))
-        layout.addWidget(manage)
+        self.manage_details = Disclosure("管理分类与课程别名", manage)
+        layout.addWidget(self.manage_details)
         row = QHBoxLayout()
         row.addStretch()
         row.addWidget(self._button("下一步：整理资料  →", self.advance_to_archive, True))
@@ -261,6 +263,7 @@ class GenerateMixin:
     def refresh_missing(self):
         root = self.root_path()
         self.missing_combo.clear()
+        self.missing_tools.hide()
         if root is None:
             return
         try:
@@ -275,6 +278,7 @@ class GenerateMixin:
             return
         for path in missing:
             self.missing_combo.addItem(str(path), str(path))
+        self.missing_tools.setVisible(bool(missing))
         self.missing_label.setText(f"已在磁盘上缺失 {len(missing)} 个受管目录；不会自动复原。" if missing else "")
 
     def restore_missing_ui(self):
