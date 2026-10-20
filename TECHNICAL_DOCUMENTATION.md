@@ -1,5 +1,7 @@
 # CourseShelf 1.2.0 技术文档
 
+此文为 1.2 存档。当前 1.3 的交互、分类和查询变化见 [WORKFLOW_UPDATE_1.3.md](WORKFLOW_UPDATE_1.3.md)。
+
 文档日期：2026-10-20。适用版本：`v1.2.0`，程序源码提交：`0d6937968f32c1e3cf502b1df1dc86ab62ad1b82`。
 
 本文描述已经实现并验证的行为，用于开发交接、维护和版本评估。历史需求草案中的标签、正文检索、云同步等功能不属于当前实现。界面专项记录见 [UI_REFRESH.md](UI_REFRESH.md)，M0–M7 历史验收见 [IMPROVEMENT_VALIDATION.md](IMPROVEMENT_VALIDATION.md)。

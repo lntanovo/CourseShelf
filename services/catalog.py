@@ -214,21 +214,25 @@ def disk_categories(root: Path, semester: str, course: str) -> list[str]:
     return sorted((p.name for p in folder.iterdir() if p.is_dir() and not p.is_symlink() and not p.is_junction()), key=str.casefold)
 
 
-def plan_paths(root: Path, semester: str, courses: list[str]) -> tuple[Path, list[tuple[Path, list[str]]], list[Path]]:
+def plan_paths(root: Path, semester: str, courses: list[str], *, extra_categories=None) -> tuple[Path, list[tuple[Path, list[str]]], list[Path]]:
     semester_path, course_items = build_plan(root, semester, courses)
     paths = [semester_path]
     items = []
     for _, course_path in course_items:
         categories = categories_for(root, semester_path.name, course_path.name)
+        for raw in (extra_categories or {}).get(course_path.name, []):
+            category = _component(raw)
+            if category.casefold() not in {name.casefold() for name in categories}:
+                categories.append(category)
         paths.append(course_path)
         paths.extend(course_path / category for category in categories)
         items.append((course_path, categories))
     return semester_path, items, paths
 
 
-def create_plan(root: Path, semester: str, courses: list[str]) -> tuple[int, int, list[str], Path]:
+def create_plan(root: Path, semester: str, courses: list[str], *, extra_categories=None) -> tuple[int, int, list[str], Path]:
     data = writable_catalog(root)
-    semester_path, items, paths = plan_paths(root, semester, courses)
+    semester_path, items, paths = plan_paths(root, semester, courses, extra_categories=extra_categories)
     previously_existing = {course_path for course_path, _ in items if course_path.is_dir()}
     created = existing = 0
     batch_id = uuid.uuid4().hex

@@ -104,7 +104,7 @@ try {
     } | ForEach-Object {
         @{ path = [IO.Path]::GetRelativePath($release, $_.FullName); sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
     }
-    $version = '1.2.0'
+    $version = '1.3.0'
     @{ schema_version = 1; version = $version; built_at = [DateTime]::UtcNow.ToString('o'); files = @($files) } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $release 'release-manifest.json') -Encoding utf8
     $archive = Join-Path $distribution "CourseShelf-$version-Windows.zip"
     Compress-Archive -LiteralPath $release -DestinationPath $archive -Force

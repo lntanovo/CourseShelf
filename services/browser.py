@@ -14,6 +14,20 @@ def local_path(path):
     return not (os.name == "nt" and path.drive and ctypes.windll.kernel32.GetDriveTypeW(path.drive + "\\") == 4)
 
 
+def library_ancestor(directory):
+    """Detect a selected child folder without silently changing the library root."""
+    directory = Path(directory)
+    if (directory / ".courseshelf.json").is_file():
+        return None
+    for parent in directory.parents:
+        if linked(parent):
+            return None
+        metadata = parent / ".courseshelf.json"
+        if metadata.is_file() and not linked(metadata):
+            return parent
+    return None
+
+
 def read_directory(root, directory, cancelled=lambda: False, limit=None):
     root, directory = Path(root), Path(directory)
     if not local_path(directory) or linked(directory) or not directory.is_dir() or not directory.resolve().is_relative_to(root.resolve()):

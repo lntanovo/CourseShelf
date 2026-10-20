@@ -219,13 +219,15 @@ class OptimizationTests(unittest.TestCase):
             self.assertEqual(reopened.files_table.rowCount(), 1)
             src = self.base / "通信原理-PPT.pdf"
             src.write_text("source")
-            reopened.source_edit.setText(str(src))
+            reopened.add_to_inbox([src], replace=True)
+            reopened.apply_suggestions()
             self.assertEqual(reopened.course_combo.currentText(), "通信原理")
             self.assertEqual(reopened.category_combo.currentText(), "课件")
             self.assertIn("文件名包含课程全名", reopened.suggestion_label.text())
             ambiguous = self.base / "模糊材料.pdf"
             ambiguous.write_text("source")
-            reopened.source_edit.setText(str(ambiguous))
+            reopened.add_to_inbox([ambiguous], replace=True)
+            reopened.apply_suggestions()
             self.assertEqual(reopened.course_combo.currentIndex(), -1)
             self.assertIn("需手动选择", reopened.suggestion_label.text())
         finally:

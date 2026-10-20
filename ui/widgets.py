@@ -1,6 +1,42 @@
-from PySide6.QtCore import Qt, Signal, QPointF
+from PySide6.QtCore import Qt, Signal, QPointF, QSize
 from PySide6.QtGui import QPainter, QPen, QPalette, QPolygonF
-from PySide6.QtWidgets import QLineEdit, QLabel, QTreeWidget, QToolButton, QVBoxLayout, QWidget, QTableWidget, QComboBox
+from PySide6.QtWidgets import QLineEdit, QLabel, QTreeWidget, QToolButton, QVBoxLayout, QWidget, QTableWidget, QComboBox, QStyledItemDelegate
+
+
+class StatusLabel(QLabel):
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self.setVisible(bool(text))
+
+    def setText(self, text):
+        super().setText(text)
+        self.setVisible(bool(text))
+
+    def clear(self):
+        self.setText("")
+
+
+class CourseDelegate(QStyledItemDelegate):
+    def sizeHint(self, option, index):
+        size = super().sizeHint(option, index)
+        return QSize(size.width(), max(size.height(), option.fontMetrics.height() + 18))
+
+    def createEditor(self, parent, option, index):
+        editor = super().createEditor(parent, option, index)
+        if isinstance(editor, QLineEdit):
+            editor.setObjectName("courseEditor")
+            editor.setStyleSheet("QLineEdit#courseEditor { padding: 0px 6px; min-height: 0px; border-radius: 5px; }")
+        return editor
+
+    def updateEditorGeometry(self, editor, option, index):
+        editor.setGeometry(option.rect.adjusted(0, 1, 0, -1))
+
+
+class DirectoryPreview(QTreeWidget):
+    def path_count(self):
+        def total(item):
+            return 1 + sum(total(item.child(i)) for i in range(item.childCount()))
+        return sum(total(self.topLevelItem(i)) for i in range(self.topLevelItemCount()))
 
 
 class SoftComboBox(QComboBox):
@@ -44,7 +80,7 @@ class InboxTable(QTableWidget):
         super().__init__(0, 7)
         self.setAcceptDrops(True)
         self._compact = None
-        self.empty = QLabel("把文件拖到这里\n或点击“添加文件”，开始整理", self.viewport())
+        self.empty = QLabel("暂无文件", self.viewport())
         self.empty.setObjectName("muted")
         self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)

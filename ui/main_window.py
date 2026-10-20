@@ -19,13 +19,14 @@ from .tabs.generate import GenerateMixin
 from .tabs.archive import ArchiveMixin
 from .tabs.browser import BrowserMixin
 from .tabs.history import HistoryMixin
+from .widgets import StatusLabel
 
 PAGES = {
-    0: ("课表与课程", "新学期，从一张课表开始。识别之后，核对课程名称。"),
-    1: ("生成目录", "给每门课程留一个位置。先预览，再确认创建。"),
-    2: ("整理资料", "把零散的文件，放回合适的课程。"),
-    3: ("操作记录", "查看整理结果，需要时安全撤销。"),
-    4: ("资料库", "浏览与搜索本机文件，双击即可打开。"),
+    0: "课表与课程",
+    1: "生成目录",
+    2: "整理资料",
+    3: "操作记录",
+    4: "资料库",
 }
 
 
@@ -65,11 +66,7 @@ class MainWindow(AppearanceMixin, RootMixin, OcrMixin, GenerateMixin, ArchiveMix
         titles.setSpacing(5)
         self.page_heading = QLabel()
         self.page_heading.setObjectName("heading")
-        self.page_description = QLabel()
-        self.page_description.setObjectName("subtitle")
-        self.page_description.setWordWrap(True)
         titles.addWidget(self.page_heading)
-        titles.addWidget(self.page_description)
         top.addLayout(titles, 1)
         appearance = self._button("外观与背景", self.open_appearance)
         appearance.setObjectName("quiet")
@@ -86,7 +83,8 @@ class MainWindow(AppearanceMixin, RootMixin, OcrMixin, GenerateMixin, ArchiveMix
         self.tabs.currentChanged.connect(self._page_changed)
         workspace.addWidget(self.tabs, 1)
         self._page_changed(0)
-        self.statusBar().showMessage("所有操作都在本机完成")
+        self.statusBar().hide()
+        self.statusBar().messageChanged.connect(lambda message: self.statusBar().setVisible(bool(message)))
         self.initialize_appearance()
 
         settings = load_settings()
@@ -114,9 +112,6 @@ class MainWindow(AppearanceMixin, RootMixin, OcrMixin, GenerateMixin, ArchiveMix
         brand = QLabel("CourseShelf")
         brand.setObjectName("brand")
         layout.addWidget(brand)
-        tagline = QLabel("课程有序 · 学习从容")
-        tagline.setObjectName("muted")
-        layout.addWidget(tagline)
         layout.addSpacing(30)
         self.navigation = QButtonGroup(self)
         self.nav_buttons = {}
@@ -132,7 +127,7 @@ class MainWindow(AppearanceMixin, RootMixin, OcrMixin, GenerateMixin, ArchiveMix
                 layout.addWidget(label)
             if index == 3:
                 layout.addSpacing(20)
-            button = QPushButton(PAGES[index][0])
+            button = QPushButton(PAGES[index])
             button.setObjectName("nav")
             button.setIcon(self.style().standardIcon(icon))
             button.setCheckable(True)
@@ -144,16 +139,10 @@ class MainWindow(AppearanceMixin, RootMixin, OcrMixin, GenerateMixin, ArchiveMix
         about = self._button("关于 CourseShelf", self.show_about)
         about.setObjectName("quiet")
         layout.addWidget(about)
-        offline = QLabel("离线运行 · 资料留在本机")
-        offline.setObjectName("muted")
-        offline.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(offline)
         return sidebar
 
     def _page_changed(self, index):
-        title, description = PAGES[index]
-        self.page_heading.setText(title)
-        self.page_description.setText(description)
+        self.page_heading.setText(PAGES[index])
         self.nav_buttons[index].setChecked(True)
 
     @staticmethod
@@ -206,7 +195,7 @@ class MainWindow(AppearanceMixin, RootMixin, OcrMixin, GenerateMixin, ArchiveMix
         row.addWidget(self._button("更换", self.choose_root))
         row.addWidget(self._button("打开文件夹", self.open_root))
         layout.addLayout(row)
-        self.root_status = QLabel()
+        self.root_status = StatusLabel()
         self.root_status.setObjectName("muted")
         self.root_status.setWordWrap(True)
         layout.addWidget(self.root_status)

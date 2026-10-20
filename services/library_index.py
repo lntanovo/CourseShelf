@@ -106,19 +106,42 @@ def scan(root, cancelled=lambda: False, progress=lambda value: None):
     return count
 
 
-def search(root, text="", course="", category="", limit=500):
+def search(root, text="", course="", category="", limit=500, *, semester="", modified_from=None,
+           modified_before=None, scope=None, exact=False, sort="name"):
     # LIKE is deliberately portable; no FTS extension or tokenizer is required.
     def pattern(value):
         return "%" + value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
 
     connection = connect_index()
     try:
-        rows = connection.execute(r"""SELECT * FROM file_record WHERE library=? AND status='ok'
-          AND name LIKE ? ESCAPE '\' AND course LIKE ? ESCAPE '\' AND category LIKE ? ESCAPE '\'
-          ORDER BY name COLLATE NOCASE LIMIT ?""",
-                                  (str(Path(root).resolve()), pattern(text), pattern(course), pattern(category), limit)).fetchall()
+        conditions = ["library=?", "status='ok'", r"name LIKE ? ESCAPE '\'"]
+        arguments = [str(Path(root).resolve()), pattern(text)]
+        for column, value in (("course", course), ("category", category)):
+            if value:
+                conditions.append(column + ("=?" if exact else r" LIKE ? ESCAPE '\'"))
+                arguments.append(value if exact else pattern(value))
+        def prefix(value):
+            return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "/%"
+        if semester:
+            conditions.append(r"rel_path LIKE ? ESCAPE '\'")
+            arguments.append(prefix(semester))
+        if scope is not None:
+            relative = Path(scope).resolve().relative_to(Path(root).resolve())
+            if relative.parts:
+                conditions.append(r"rel_path LIKE ? ESCAPE '\'")
+                arguments.append(prefix(relative.as_posix()))
+        for column, value in (("mtime_ns>=?", modified_from), ("mtime_ns<?", modified_before)):
+            if value is not None:
+                conditions.append(column)
+                arguments.append(value)
+        ordering = {"name": "name COLLATE NOCASE", "newest": "mtime_ns DESC, name COLLATE NOCASE",
+                    "oldest": "mtime_ns ASC, name COLLATE NOCASE", "size": "size DESC, name COLLATE NOCASE"}.get(sort, "name COLLATE NOCASE")
+        arguments.append(limit)
+        rows = connection.execute("SELECT * FROM file_record WHERE " + " AND ".join(conditions)
+                                  + " ORDER BY " + ordering + " LIMIT ?", arguments).fetchall()
         # A stale cache must never make an externally removed file appear openable.
-        return [dict(row) for row in rows if (Path(root) / row["rel_path"]).is_file()
+        return [dict(row) for row in rows if not Path(row["rel_path"]).is_absolute() and ".." not in Path(row["rel_path"]).parts
+                and (Path(root) / row["rel_path"]).is_file()
                 and not linked(Path(root) / row["rel_path"])]
     finally:
         connection.close()

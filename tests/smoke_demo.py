@@ -98,7 +98,7 @@ def main():
     window.root_changed()
     window.semester_edit.setText("2026秋季学期")
     assert window.show_preview()
-    assert window.preview.count() == 46
+    assert window.preview.path_count() == 46
     window.generate()
     assert "创建 46" in window.generate_status.text(), window.generate_status.text()
     for _, course_dir in build_plan(root, "2026秋季学期", expected)[1]:
@@ -110,6 +110,7 @@ def main():
     source = work / "讲义.txt"
     source.write_text("original material", encoding="utf-8")
     window.source_edit.setText(str(source))
+    window.source_edit.returnPressed.emit()
     window.course_combo.setCurrentText("通信原理")
     window.category_combo.setCurrentText("课件")
     assert str(root / "2026秋季学期" / "通信原理" / "课件") in window.destination_label.text()
@@ -135,7 +136,7 @@ def main():
     QTimer.singleShot(30000, loop.quit)
     loop.exec()
     assert "跳过 1" in window.archive_status.text(), window.archive_status.text()
-    assert window.copy_button.isEnabled(), "copy button became disabled after successful copy"
+    assert not window.copy_button.isEnabled(), "completed/skipped rows must not be offered as pending work"
     target = root / "2026秋季学期" / "通信原理" / "课件"
     assert (target / "讲义.txt").read_text(encoding="utf-8") == "original material"
     assert not (target / "讲义 (1).txt").exists(), "identical content should be skipped"

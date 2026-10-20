@@ -227,7 +227,8 @@ class ImprovementTests(unittest.TestCase):
         window.apply_suggestions()
         window.archive_file()
         wait_worker(window.file_worker)
-        self.assertIn("跳过 2", window.archive_status.text())
+        self.assertIn("2 项需选目标", window.archive_status.text())
+        self.assertEqual(sum(item.status == "pending" for item in window.inbox_items), 2)
         self.assertEqual(sum(item.status == "ok" for item in window.inbox_items), 18)
         window.close()
 

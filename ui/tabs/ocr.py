@@ -18,15 +18,11 @@ from runtime import (log)
 
 
 from tasks import OcrWorker
-from ui.widgets import ImageDropZone
+from ui.widgets import ImageDropZone, CourseDelegate
 
 class OcrMixin:
     def _make_ocr_tab(self) -> QWidget:
         scroll, layout = self._scroll_content()
-        note = QLabel("先选课表截图并在本机识别，再逐项核对课程名。识别有误时可直接修改。")
-        note.setWordWrap(True)
-        layout.addWidget(note)
-
         image_card, image_layout = self._card("导入课表图片")
         self.image_label = QLabel("尚未选择图片")
         self.image_label.setObjectName("pathText")
@@ -51,7 +47,7 @@ class OcrMixin:
         self.ocr_progress.setTextVisible(False)
         self.ocr_progress.setVisible(False)
         image_layout.addWidget(self.ocr_progress)
-        self.ocr_status = QLabel("OCR 尚未运行")
+        self.ocr_status = QLabel("")
         self.thumbnail.rejected.connect(self.ocr_status.setText)
         self.ocr_status.setWordWrap(True)
         image_layout.addWidget(self.ocr_status)
@@ -60,10 +56,11 @@ class OcrMixin:
         columns.addWidget(image_card, 1)
 
         course_card, course_layout = self._card("核对课程名称")
-        self.course_hint = QLabel("当前没有课程。识别课表或手动添加后即可生成目录。")
+        self.course_hint = QLabel("0 门课程")
         self.course_hint.setWordWrap(True)
         course_layout.addWidget(self.course_hint)
         self.courses_list = QListWidget()
+        self.courses_list.setItemDelegate(CourseDelegate(self.courses_list))
         self.courses_list.setMinimumHeight(190)
         self.courses_list.itemChanged.connect(self.refresh_course_hint)
         self.courses_list.itemChanged.connect(self.invalidate_preview)
@@ -167,12 +164,12 @@ class OcrMixin:
         item = QListWidgetItem(name)
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
         self.courses_list.addItem(item)
+        self.refresh_course_hint()
         self.invalidate_preview()
 
     def refresh_course_hint(self, *_):
         count = len([name for name in self.course_names() if name.strip()])
-        self.course_hint.setText(f"当前 {count} 门课程。双击名称可编辑，也可手动添加或删除。" if count else
-                                 "当前没有课程。识别课表或手动添加后即可生成目录。")
+        self.course_hint.setText(f"{count} 门课程")
 
     def add_course(self):
         name = self.new_course.text().strip()

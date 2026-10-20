@@ -34,6 +34,13 @@ class RootMixin:
             self.root_changed()
 
     def root_changed(self, *, save: bool = True, preferred: str | None = None):
+        if getattr(self, "_resolving_root", False):
+            return
+        if any(worker and worker.isRunning() for worker in (self.file_worker, self.undo_worker, self.file_action_worker)):
+            if getattr(self, "_accepted_root", None):
+                self.root_edit.setText(str(self._accepted_root))
+            self.statusBar().showMessage("请等待当前操作完成")
+            return
         root = self.root_path()
         if root is None:
             self.root_status.setText("资料目录不存在或未选择。请选一个已有的本机文件夹；不会自动创建。")
@@ -48,16 +55,41 @@ class RootMixin:
             self.missing_combo.clear()
             return
         root = root.resolve()
+        if save:
+            from services.browser import library_ancestor
+            ancestor = library_ancestor(root)
+            if ancestor is not None:
+                self._resolving_root = True
+                try:
+                    box = QMessageBox(self)
+                    box.setWindowTitle("选择的是资料库内的文件夹")
+                    box.setText(f"资料库：{ancestor}\n文件夹：{root}")
+                    browse = box.addButton("打开此文件夹", QMessageBox.ButtonRole.AcceptRole)
+                    independent = box.addButton("设为独立资料库", QMessageBox.ButtonRole.ActionRole)
+                    cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+                    box.setDefaultButton(browse)
+                    box.setEscapeButton(cancel)
+                    box.exec()
+                    if box.clickedButton() == browse:
+                        preferred, root = str(root), ancestor
+                        self.tabs.setCurrentIndex(4)
+                    elif box.clickedButton() != independent:
+                        previous = getattr(self, "_accepted_root", None)
+                        self.root_edit.setText(str(previous) if previous else "")
+                        return
+                finally:
+                    self._resolving_root = False
+        self._accepted_root = root
         log.info("root_changed root=%s", root)
         if self.root_edit.text() != str(root):
             self.root_edit.setText(str(root))
+        self.root_status.clear()
         if save:
             try:
                 save_root(root)
             except OSError as exc:
                 self.root_status.setText("目录可用，但设置保存失败：" + str(exc))
         self.root_edit.setToolTip(str(root))
-        self.root_status.setText("本机资料库 · 默认复制，原文件保留")
         self.refresh_browser(preferred=preferred or str(root), remember=save)
 
     def show_about(self):

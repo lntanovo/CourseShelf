@@ -67,7 +67,12 @@ try {
     $process.Refresh()
     if ($process.HasExited) { throw "Relocated GUI app exited unexpectedly: $($process.ExitCode)" }
     Write-Host "Relocated GUI app opened: PID $($process.Id)"
-    Stop-Process -Id $process.Id -Force
+    # The GUI may still be warming its OCR child. Stop the disposable test process
+    # tree together so the uninstaller is not raced against a loaded OCR DLL.
+    if (-not $process.CloseMainWindow() -or -not $process.WaitForExit(10000)) {
+        & taskkill.exe /PID $process.Id /T /F | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'Could not stop relocated test process tree' }
+    }
     $process.WaitForExit()
 
     $uninstallExe = Join-Path $relocated 'uninstall.exe'
@@ -78,7 +83,10 @@ try {
     if ($report.owned.Count -lt 100) { throw "Unexpected release manifest size: $($report.owned.Count)" }
     $executeJson = Join-Path $sandbox 'uninstall-execute.json'
     $uninstallProcess = Start-Process -FilePath $uninstallExe -ArgumentList @('--execute', $executeJson, '--clear-settings', '--self-cleanup') -WorkingDirectory $relocated -WindowStyle Hidden -Wait -PassThru
-    if ($uninstallProcess.ExitCode -ne 0) { throw 'Relocated uninstaller execution failed' }
+    if ($uninstallProcess.ExitCode -ne 0) {
+        if (Test-Path -LiteralPath $executeJson) { Get-Content -LiteralPath $executeJson -Raw -Encoding utf8 | Write-Output }
+        throw 'Relocated uninstaller execution failed'
+    }
     Start-Sleep -Seconds 4
     $done = Get-Content -LiteralPath $executeJson -Raw -Encoding utf8 | ConvertFrom-Json
     if ($done.failed.Count -ne 0 -or $done.modified.Count -ne 0) { throw 'Uninstaller reported failed or modified release files' }

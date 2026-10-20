@@ -6,12 +6,12 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QDate
 from PySide6.QtGui import QShortcut
 from PySide6.QtWidgets import QMenu, QFileIconProvider
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-    QInputDialog, QSizePolicy, QSplitter, QTableWidget, QTableWidgetItem,
+    QInputDialog, QSizePolicy, QSplitter, QTableWidget, QTableWidgetItem, QDateEdit, QStyle,
     QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -33,6 +33,10 @@ class BrowserMixin:
         self._tree_loaded = set()
         self._tree_pending = set()
         self._refresh_scheduled = False
+        self._filter_updating = False
+        self._filter_catalog = {}
+        self._query_directory = None
+        self._query_error = False
         self.view_settings_timer = QTimer(self)
         self.view_settings_timer.setSingleShot(True)
         self.view_settings_timer.setInterval(350)
@@ -86,23 +90,58 @@ class BrowserMixin:
         files_layout.addWidget(self.files_title)
         search_row = QHBoxLayout()
         self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("搜索文件名（全资料目录）")
-        self.search_course = QLineEdit()
-        self.search_course.setPlaceholderText("课程筛选")
-        self.search_category = QLineEdit()
-        self.search_category.setPlaceholderText("分类筛选")
+        self.search_edit.setPlaceholderText("搜索全部资料中的文件名")
+        search_row.addWidget(self.search_edit, 1)
+        search_row.addWidget(self._button("清除筛选", self.reset_search))
+        files_layout.addLayout(search_row)
+        filters = QHBoxLayout()
+        self.search_term = QComboBox()
+        self.search_course = QComboBox()
+        self.search_category = QComboBox()
+        for combo, label in ((self.search_term, "全部学期"), (self.search_course, "全部课程"), (self.search_category, "全部分类")):
+            combo.addItem(label, "")
+            combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            filters.addWidget(combo, 1)
+        files_layout.addLayout(filters)
+        dates = QHBoxLayout()
+        dates.addWidget(QLabel("修改时间"))
+        self.search_time = QComboBox()
+        for label, key in (("不限", "all"), ("今天", "today"), ("近7天", "week"), ("近30天", "month30"), ("本月", "month"), ("自定义", "custom")):
+            self.search_time.addItem(label, key)
+        dates.addWidget(self.search_time, 1)
+        self.file_sort = QComboBox()
+        for label, key in (("最新修改", "newest"), ("最早修改", "oldest"), ("文件名", "name"), ("文件大小", "size")):
+            self.file_sort.addItem(label, key)
+        dates.addWidget(self.file_sort, 1)
+        files_layout.addLayout(dates)
+        self.date_range = QWidget()
+        custom_dates = QHBoxLayout(self.date_range)
+        custom_dates.setContentsMargins(0, 0, 0, 0)
+        self.date_from = QDateEdit(QDate.currentDate().addDays(-29))
+        self.date_until = QDateEdit(QDate.currentDate())
+        for editor in (self.date_from, self.date_until):
+            editor.setCalendarPopup(True)
+            editor.setDisplayFormat("yyyy-MM-dd")
+            editor.dateChanged.connect(self.filter_changed)
+        custom_dates.addWidget(self.date_from)
+        custom_dates.addWidget(QLabel("至"))
+        custom_dates.addWidget(self.date_until)
+        files_layout.addWidget(self.date_range)
+        self.date_range.hide()
         self.search_timer = QTimer(self)
         self.search_timer.setSingleShot(True)
         self.search_timer.setInterval(180)
         self.search_timer.timeout.connect(self.search_files)
-        for widget in (self.search_edit, self.search_course, self.search_category):
-            widget.textChanged.connect(lambda: self.search_timer.start())
-            search_row.addWidget(widget)
-        files_layout.addLayout(search_row)
+        self.search_edit.textChanged.connect(self.filter_changed)
+        self.search_term.currentIndexChanged.connect(self.filter_term_changed)
+        self.search_course.currentIndexChanged.connect(self.filter_course_changed)
+        self.search_category.currentIndexChanged.connect(self.filter_changed)
+        self.search_time.currentIndexChanged.connect(self.filter_changed)
+        self.file_sort.currentIndexChanged.connect(self.sort_files)
         self.index_status = QLabel("索引尚未扫描")
         files_layout.addWidget(self.index_status)
-        self.files_table = QTableWidget(0, 3)
-        self.files_table.setHorizontalHeaderLabels(["文件名", "大小", "修改时间"])
+        self.files_table = QTableWidget(0, 4)
+        self.files_table.setHorizontalHeaderLabels(["文件名", "大小", "修改时间", "所在文件夹"])
         self.files_table.setSortingEnabled(True)
         self.files_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.files_table.customContextMenuRequested.connect(self.file_context_menu)
@@ -120,6 +159,11 @@ class BrowserMixin:
         self.files_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.files_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.files_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.files_table.setColumnWidth(3, 170)
+        self.files_table.setColumnHidden(3, True)
+        self.files_table.setWordWrap(False)
+        self.files_table.setShowGrid(False)
+        self.files_table.verticalHeader().setDefaultSectionSize(34)
         self.files_table.doubleClicked.connect(self.open_selected_file)
         files_layout.addWidget(self.files_table)
         panes.addWidget(files_box)
@@ -164,7 +208,7 @@ class BrowserMixin:
             self.browser_path_label.setText("上次查看的目录已失效，已返回资料总目录：" + str(root))
         self.refresh_missing()
         self.refresh_targets()
-
+        self.refresh_filter_choices()
         self.start_index_scan()
         self.refresh_history()
 
@@ -190,8 +234,101 @@ class BrowserMixin:
         if self._scan_pending and not getattr(self, "_closing", False):
             self.start_index_scan()
 
+    def refresh_filter_choices(self):
+        selected_term = self.search_term.currentData()
+        self._filter_catalog = self.course_snapshot()
+        self._filter_updating = True
+        self.search_term.blockSignals(True)
+        self.search_term.clear()
+        self.search_term.addItem("全部学期", "")
+        for term in sorted({Path(key).parts[0] for key in self._filter_catalog}):
+            self.search_term.addItem(term, term)
+        self.search_term.setCurrentIndex(max(0, self.search_term.findData(selected_term)))
+        self.search_term.blockSignals(False)
+        self.populate_filter_courses()
+        self._filter_updating = False
+
+    def populate_filter_courses(self):
+        selected = self.search_course.currentData()
+        term = self.search_term.currentData()
+        self.search_course.blockSignals(True)
+        self.search_course.clear()
+        self.search_course.addItem("全部课程", "")
+        for key in sorted(self._filter_catalog):
+            semester, course = Path(key).parts
+            if not term or term == semester:
+                self.search_course.addItem(course if term else f"{course} · {semester}", key)
+        self.search_course.setCurrentIndex(max(0, self.search_course.findData(selected)))
+        self.search_course.blockSignals(False)
+        self.populate_filter_categories()
+
+    def populate_filter_categories(self):
+        selected = self.search_category.currentData()
+        term, course = self.search_term.currentData(), self.search_course.currentData()
+        values = set()
+        for key, names in self._filter_catalog.items():
+            if (not term or Path(key).parts[0] == term) and (not course or course == key):
+                values.update(names)
+        self.search_category.blockSignals(True)
+        self.search_category.clear()
+        self.search_category.addItem("全部分类", "")
+        for name in sorted(values):
+            self.search_category.addItem(name, name)
+        self.search_category.setCurrentIndex(max(0, self.search_category.findData(selected)))
+        self.search_category.blockSignals(False)
+
+    def filter_term_changed(self, *_):
+        if not self._filter_updating:
+            self.populate_filter_courses()
+            self.filter_changed()
+
+    def filter_course_changed(self, *_):
+        if not self._filter_updating:
+            self.populate_filter_categories()
+            self.filter_changed()
+
+    def filter_changed(self, *_):
+        if self._filter_updating:
+            return
+        self._query_directory = None
+        self.date_range.setVisible(self.search_time.currentData() == "custom")
+        self.search_timer.start()
+
+    def reset_search_controls(self):
+        self._filter_updating = True
+        self.search_edit.clear()
+        for combo in (self.search_term, self.search_course, self.search_category, self.search_time):
+            combo.blockSignals(True)
+            combo.setCurrentIndex(0)
+            combo.blockSignals(False)
+        self.populate_filter_courses()
+        self.date_range.hide()
+        self.search_timer.stop()
+        self._filter_updating = False
+        self._query_directory = None
+        if self._query_error:
+            self.index_status.clear()
+            self._query_error = False
+
+    def reset_search(self):
+        self.reset_search_controls()
+        self.show_files(self.root_path(), remember=False)
+
     def has_search(self):
-        return any(widget.text().strip() for widget in (self.search_edit, self.search_course, self.search_category))
+        return bool(self.search_edit.text().strip() or self.search_term.currentData() or self.search_course.currentData()
+                    or self.search_category.currentData() or self.search_time.currentData() != "all" or self._query_directory)
+
+    def sort_files(self, *_):
+        if self.has_search():
+            self.search_files()
+        else:
+            self.apply_file_sort()
+
+    def apply_file_sort(self):
+        key = self.file_sort.currentData()
+        column = {"newest": 2, "oldest": 2, "name": 0, "size": 1}.get(key, 0)
+        order = Qt.SortOrder.DescendingOrder if key in {"newest", "size"} else Qt.SortOrder.AscendingOrder
+        self.files_table.sortItems(column, order)
 
     def search_files(self):
         root = self.root_path()
@@ -201,23 +338,45 @@ class BrowserMixin:
             self.show_files(self.current_directory or root, remember=False)
             return
         from library_index import search
+        from services.query_dates import time_window
+        self._files_epoch += 1
         try:
-            rows = search(root, self.search_edit.text().strip(), self.search_course.text().strip(), self.search_category.text().strip())
-            self._files_epoch += 1
+            lower, upper = time_window(self.search_time.currentData(), self.date_from.date().toPython(), self.date_until.date().toPython())
+            key = self.search_course.currentData()
+            term = Path(key).parts[0] if key else self.search_term.currentData() or ""
+            course = Path(key).name if key else ""
+            rows = search(root, self.search_edit.text().strip(), course, self.search_category.currentData() or "",
+                          semester=term, modified_from=lower, modified_before=upper, scope=self._query_directory,
+                          exact=True, sort=self.file_sort.currentData())
             self.files_table.setSortingEnabled(False)
+            self.files_table.setColumnHidden(3, False)
             self.files_table.setRowCount(len(rows))
             for row, record in enumerate(rows):
                 path = root / record["rel_path"]
-                name = QTableWidgetItem(record["rel_path"])
+                name = QTableWidgetItem(path.name)
                 name.setData(Qt.ItemDataRole.UserRole, str(path))
+                name.setToolTip(str(path))
                 name.setIcon(self._file_icon)
                 self.files_table.setItem(row, 0, name)
                 size = QTableWidgetItem()
                 size.setData(Qt.ItemDataRole.EditRole, record["size"])
                 self.files_table.setItem(row, 1, size)
                 self.files_table.setItem(row, 2, QTableWidgetItem(datetime.fromtimestamp(record["mtime_ns"] / 1e9).strftime("%Y-%m-%d %H:%M")))
-            self.files_title.setText(f"搜索结果 · {len(rows)} 个（最多 500）")
+                location = QTableWidgetItem(str(Path(record["rel_path"]).parent))
+                location.setToolTip(str(path.parent))
+                self.files_table.setItem(row, 3, location)
+            self.files_title.setText(f"{len(rows)} 个文件" + (" · 仅显示前500项" if len(rows) == 500 else ""))
+            self.browser_path_label.setText(str(self._query_directory) if self._query_directory else "全部资料")
             self.files_table.setSortingEnabled(True)
+            self.apply_file_sort()
+            if self._query_error:
+                self.index_status.clear()
+                self._query_error = False
+        except ValueError as exc:
+            self._query_error = True
+            self.index_status.setText(str(exc))
+            self.files_table.setRowCount(0)
+            self.files_title.setText("0 个文件")
         except Exception as exc:
             log.exception("search_failed")
             self.index_status.setText("索引不可用，正在重建：" + str(exc))
@@ -230,6 +389,13 @@ class BrowserMixin:
         self.folder_tree.blockSignals(True)
         self.folder_tree.clear()
         self.tree_items.clear()
+        top = QTreeWidgetItem([root.name])
+        top.setData(0, Qt.ItemDataRole.UserRole, str(root))
+        top.setToolTip(0, str(root))
+        top.setIcon(0, self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon))
+        self.folder_tree.addTopLevelItem(top)
+        self.tree_items[root] = top
+        top.setExpanded(True)
         self._populate_tree(root)
         self.folder_tree.blockSignals(False)
 
@@ -266,6 +432,7 @@ class BrowserMixin:
                     if path in self.tree_items:
                         continue
                     item = QTreeWidgetItem([path.name])
+                    item.setIcon(0, self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon))
                     item.setData(0, Qt.ItemDataRole.UserRole, str(path))
                     item.setChildIndicatorPolicy(QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator)
                     if parent is None:
@@ -311,6 +478,7 @@ class BrowserMixin:
 
     def on_tree_selected(self, current, _previous):
         if current is not None:
+            self.reset_search_controls()
             self.show_files(Path(current.data(0, Qt.ItemDataRole.UserRole)))
             self.refresh_manage_categories()
 
@@ -319,6 +487,7 @@ class BrowserMixin:
         root = self.root_path()
         if root is None:
             return
+        self._query_directory = None
         self._files_epoch += 1
         epoch = self._files_epoch
         try:
@@ -333,7 +502,13 @@ class BrowserMixin:
         def apply(data):
             if epoch != self._files_epoch or getattr(self, "_closing", False):
                 return
-            files = data["files"]
+            if data["folders"] or self.has_search():
+                if not self.has_search():
+                    self._query_directory = directory
+                self.search_files()
+                return
+            files = [entry for entry in data["files"] if not entry[0].name.startswith(".courseshelf")]
+            self.files_table.setColumnHidden(3, True)
             self.files_table.setSortingEnabled(False)
             self.files_table.setRowCount(len(files))
             self.files_title.setText(f"文件 · {len(files)} 个")
@@ -354,6 +529,7 @@ class BrowserMixin:
                     QTimer.singleShot(0, lambda: chunk(start + 64))
                 else:
                     self.files_table.setSortingEnabled(True)
+                    self.apply_file_sort()
             chunk()
         if snapshot is None:
             self.files_title.setText("正在后台读取文件…")
@@ -385,8 +561,9 @@ class BrowserMixin:
         self.refresh_browser(**self._refresh_kwargs)
 
     def open_current_folder(self):
-        if self.current_directory and self.current_directory.is_dir():
-            open_with_shell(self.current_directory, self.statusBar().showMessage)
+        directory = (self._query_directory or self.root_path()) if self.has_search() else self.current_directory
+        if directory and directory.is_dir():
+            open_with_shell(directory, self.statusBar().showMessage)
         else:
             self.browser_path_label.setText("没有可打开的目录，请先选择资料总目录。")
 
