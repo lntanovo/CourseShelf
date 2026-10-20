@@ -1,11 +1,12 @@
 param(
     [string]$Python = (Join-Path $PSScriptRoot '.venv\Scripts\python.exe'),
-    [string]$UpxDirectory = (Join-Path $PSScriptRoot '.tools\upx-5.2.1-win64')
+    [string]$UpxDirectory = (Join-Path $PSScriptRoot '.tools\upx-5.2.1-win64'),
+    [string]$DistributionDirectory = (Join-Path $PSScriptRoot 'dist')
 )
 
 $ErrorActionPreference = 'Stop'
 $project = [IO.Path]::GetFullPath($PSScriptRoot)
-$distribution = [IO.Path]::GetFullPath((Join-Path $project 'dist'))
+$distribution = [IO.Path]::GetFullPath($DistributionDirectory)
 $work = [IO.Path]::GetFullPath((Join-Path $project 'build'))
 $prefix = $project.TrimEnd('\') + '\'
 foreach ($target in @($distribution, $work)) {
@@ -18,6 +19,11 @@ if (-not (Test-Path -LiteralPath $Python -PathType Leaf)) {
 }
 $upx = Join-Path $UpxDirectory 'upx.exe'
 if (-not (Test-Path -LiteralPath $upx -PathType Leaf)) { throw 'Run tools\setup_upx.ps1 once before building (official UPX 5.2.1, SHA-256 pinned).' }
+$releasePrefix = (Join-Path $distribution 'CourseShelf').TrimEnd('\') + '\'
+$running = @(Get-CimInstance Win32_Process -Filter "Name='CourseShelf.exe'" | Where-Object {
+    $_.ExecutablePath -and $_.ExecutablePath.StartsWith($releasePrefix, [StringComparison]::OrdinalIgnoreCase)
+})
+if ($running.Count) { throw 'The target release is running. Close it or choose a different -DistributionDirectory before building.' }
 
 Push-Location $project
 try {

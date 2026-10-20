@@ -1,10 +1,11 @@
 param(
     [string]$Project = (Split-Path -Parent $PSScriptRoot),
-    [switch]$UseFictionalSample
+    [switch]$UseFictionalSample,
+    [string]$ReleaseDirectory = (Join-Path $Project 'dist\CourseShelf')
 )
 
 $ErrorActionPreference = 'Stop'
-$sourceRelease = [IO.Path]::GetFullPath((Join-Path $Project 'dist\CourseShelf'))
+$sourceRelease = [IO.Path]::GetFullPath($ReleaseDirectory)
 $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
 $sandbox = [IO.Path]::GetFullPath((Join-Path $tempRoot ('courseshelf-packed-' + [guid]::NewGuid().ToString('N'))))
 if (-not $sandbox.StartsWith($tempRoot.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {

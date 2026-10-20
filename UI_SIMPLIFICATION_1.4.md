@@ -35,3 +35,12 @@
 ```
 
 本机启动：`dist/CourseShelf/CourseShelf.exe`。便携压缩包：`dist/CourseShelf-1.4.0-Windows.zip`。GitHub 构建独立编译，下载校验使用发布页附带的 `.sha256` 文件。
+
+旧版正在运行时，可构建到独立目录：
+
+```powershell
+.\build.ps1 -DistributionDirectory "$PWD\dist\v1.4.0"
+.\tests\packed_acceptance.ps1 -UseFictionalSample -ReleaseDirectory "$PWD\dist\v1.4.0\CourseShelf"
+```
+
+本次本机新版位于 `dist/v1.4.0/CourseShelf/CourseShelf.exe`，压缩包位于 `dist/v1.4.0/CourseShelf-1.4.0-Windows.zip`。构建前会拒绝清理正在运行的目标发布目录。先退出旧窗口，再启动新版，以免单实例机制激活旧窗口。
