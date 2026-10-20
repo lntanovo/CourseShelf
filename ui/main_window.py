@@ -18,19 +18,17 @@ from .tabs.ocr import OcrMixin
 from .tabs.generate import GenerateMixin
 from .tabs.archive import ArchiveMixin
 from .tabs.browser import BrowserMixin
-from .tabs.history import HistoryMixin
 from .widgets import StatusLabel
 
 PAGES = {
     0: "课表与课程",
     1: "生成目录",
     2: "整理资料",
-    3: "操作记录",
-    4: "资料库",
+    3: "资料库",
 }
 
 
-class MainWindow(AppearanceMixin, RootMixin, OcrMixin, GenerateMixin, ArchiveMixin, BrowserMixin, HistoryMixin, QMainWindow):
+class MainWindow(AppearanceMixin, RootMixin, OcrMixin, GenerateMixin, ArchiveMixin, BrowserMixin, QMainWindow):
     def __init__(self):
         super().__init__()
         from runtime import initialize_gui
@@ -41,12 +39,10 @@ class MainWindow(AppearanceMixin, RootMixin, OcrMixin, GenerateMixin, ArchiveMix
         self.image_path: Path | None = None
         self.worker: OcrWorker | None = None
         self.file_worker: FileWorker | None = None
-        self._suggesting = False
         self.inbox_items = []
         self._loading_inbox = False
         self._selected_inbox = -1
         self.scan_worker = None
-        self.undo_worker = None
         self._scan_pending = False
         self.last_target: Path | None = None
         self.current_directory: Path | None = None
@@ -77,7 +73,6 @@ class MainWindow(AppearanceMixin, RootMixin, OcrMixin, GenerateMixin, ArchiveMix
         self.tabs.addTab(self._make_ocr_tab(), "课表与课程")
         self.tabs.addTab(self._make_generate_tab(), "生成目录")
         self.tabs.addTab(self._make_archive_tab(), "整理资料")
-        self.tabs.addTab(self._make_history_tab(), "操作记录")
         self.tabs.addTab(self._make_browser(), "资料库")
         self.tabs.tabBar().hide()
         self.tabs.currentChanged.connect(self._page_changed)
@@ -116,17 +111,14 @@ class MainWindow(AppearanceMixin, RootMixin, OcrMixin, GenerateMixin, ArchiveMix
         self.navigation = QButtonGroup(self)
         self.nav_buttons = {}
         for index, icon in ((2, QStyle.StandardPixmap.SP_FileDialogDetailedView),
-                            (4, QStyle.StandardPixmap.SP_DirIcon),
+                            (3, QStyle.StandardPixmap.SP_DirIcon),
                             (0, QStyle.StandardPixmap.SP_FileDialogContentsView),
-                            (1, QStyle.StandardPixmap.SP_FileDialogNewFolder),
-                            (3, QStyle.StandardPixmap.SP_FileDialogInfoView)):
+                            (1, QStyle.StandardPixmap.SP_FileDialogNewFolder)):
             if index == 0:
                 layout.addSpacing(20)
                 label = QLabel("新学期")
                 label.setObjectName("eyebrow")
                 layout.addWidget(label)
-            if index == 3:
-                layout.addSpacing(20)
             button = QPushButton(PAGES[index])
             button.setObjectName("nav")
             button.setIcon(self.style().standardIcon(icon))

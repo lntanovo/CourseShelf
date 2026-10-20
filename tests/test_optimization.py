@@ -223,13 +223,13 @@ class OptimizationTests(unittest.TestCase):
             reopened.apply_suggestions()
             self.assertEqual(reopened.course_combo.currentText(), "通信原理")
             self.assertEqual(reopened.category_combo.currentText(), "课件")
-            self.assertIn("文件名包含课程全名", reopened.suggestion_label.text())
+            self.assertIn("文件名包含课程全名", reopened.inbox_items[0].reason)
             ambiguous = self.base / "模糊材料.pdf"
             ambiguous.write_text("source")
             reopened.add_to_inbox([ambiguous], replace=True)
             reopened.apply_suggestions()
             self.assertEqual(reopened.course_combo.currentIndex(), -1)
-            self.assertIn("需手动选择", reopened.suggestion_label.text())
+            self.assertIn("需手动选择", reopened.inbox_items[0].reason)
         finally:
             reopened.close()
 

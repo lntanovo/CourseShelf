@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt, QItemSelectionModel, QDate
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLineEdit, QMessageBox
+from PySide6.QtWidgets import QApplication, QLineEdit, QMessageBox, QAbstractButton, QGroupBox
 
 from app import MainWindow
 from catalog import CatalogError, create_plan, load_catalog
@@ -79,6 +79,32 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(window.course_hint.text(), "1 门课程")
         self.assertFalse(window.root_status.isVisible())
 
+    def test_removed_features_leave_working_navigation_and_preserve_existing_data(self):
+        from catalog import set_aliases
+        from history import operations
+        create_plan(self.root, "秋季", ["数学"])
+        set_aliases(self.root, "秋季", "数学", ["旧版简称"])
+        original_file = self.root / "秋季/数学/课件/original.txt"
+        original_file.write_bytes(b"existing user material")
+        metadata = (self.root / ".courseshelf.json").read_bytes()
+        record_ids = [record["id"] for record in operations(self.root)]
+        window = self.window()
+        self.assertEqual(window.tabs.count(), 4)
+        for index, title in enumerate(("课表与课程", "生成目录", "整理资料", "资料库")):
+            window.nav_buttons[index].click()
+            self.assertEqual(window.tabs.currentIndex(), index)
+            self.assertEqual(window.page_heading.text(), title)
+        texts = [button.text() for button in window.findChildren(QAbstractButton)]
+        texts += [box.title() for box in window.findChildren(QGroupBox)]
+        texts += [window.tabs.tabText(index) for index in range(window.tabs.count())]
+        for removed in ("操作记录", "撤销选中操作", "选中项详情与进阶选项", "管理分类与课程别名",
+                        "纳入管理", "编辑课程别名", "把本次选择记为别名…"):
+            self.assertNotIn(removed, texts)
+        self.assertEqual(window.inbox_table.columnCount(), 6)
+        self.assertEqual((self.root / ".courseshelf.json").read_bytes(), metadata)
+        self.assertEqual([record["id"] for record in operations(self.root)], record_ids)
+        self.assertEqual(original_file.read_bytes(), b"existing user material")
+
     def test_tree_preview_and_scoped_categories_do_not_write_before_generate(self):
         window = self.window()
         for name in ("数学", "设计"):
@@ -137,9 +163,9 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual([item.course for item in window.inbox_items], ["秋季/数学", "秋季/数学", None])
         category = window.inbox_table.cellWidget(0, 3)
         category.setCurrentIndex(0)
-        self.assertEqual(window.inbox_table.item(0, 6).text(), "需选目标")
+        self.assertEqual(window.inbox_table.item(0, 5).text(), "需选目标")
         category.setCurrentIndex(category.findData("课件"))
-        self.assertEqual(window.inbox_table.item(0, 6).text(), "待执行")
+        self.assertEqual(window.inbox_table.item(0, 5).text(), "待执行")
         window.execute_scope.setCurrentIndex(window.execute_scope.findData("selected"))
         self.assertEqual(window.copy_button.text(), "执行 2 项")
         window.archive_file()
@@ -237,6 +263,6 @@ class WorkflowTests(unittest.TestCase):
             window.root_changed()
         self.assertEqual(window.root_path(), self.root)
         self.assertEqual(window.current_directory, child)
-        self.assertEqual(window.tabs.currentIndex(), 4)
+        self.assertEqual(window.tabs.currentIndex(), 3)
         self.assertFalse((child / ".courseshelf.json").exists())
         self.assertEqual((self.root / ".courseshelf.json").read_bytes(), original)

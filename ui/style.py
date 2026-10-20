@@ -28,8 +28,7 @@ QLabel#eyebrow { color: $accent; font-size: 11px; font-weight: 600; }
 QLabel#warning { color: $accent; }
 QLabel#sectionTitle { font-size: 14px; font-weight: 600; }
 QLabel#imagePreview { background: $field; border: 1px dashed $border; border-radius: 16px; color: $muted; padding: 12px; }
-QLabel#destination { padding: 10px; background: $selection; border-radius: 10px; color: $text; }
-QFrame#rootCard, QFrame#actionBar, QFrame#detailPanel { background: $surface; border: 1px solid $border; border-radius: 14px; }
+QFrame#rootCard, QFrame#actionBar { background: $surface; border: 1px solid $border; border-radius: 14px; }
 QGroupBox { background: $surface; border: 1px solid $border; border-radius: 16px; margin-top: 18px; font-weight: 600; }
 QGroupBox::title { subcontrol-origin: margin; left: 18px; padding: 0 6px; color: $muted; }
 QLineEdit, QComboBox, QListWidget, QTreeWidget, QTableWidget { background: $field; color: $text; border: 1px solid $border; border-radius: 9px; padding: 7px; selection-background-color: $selection; selection-color: $text; }
@@ -52,7 +51,6 @@ QPushButton#nav:hover { background: $hover; }
 QPushButton#nav:checked { background: $selection; color: $text; font-weight: 600; }
 QPushButton#quiet { background: transparent; border-color: transparent; color: $muted; }
 QPushButton#quiet:hover { background: $hover; color: $text; }
-QToolButton#disclosure { background: transparent; border: none; padding: 8px 2px; text-align: left; color: $muted; }
 QPushButton#themeChoice { text-align: left; padding: 18px; min-height: 34px; }
 QPushButton#themeChoice:checked { border: 2px solid $accent; background: $selection; }
 QTabWidget::pane { border: none; background: transparent; }

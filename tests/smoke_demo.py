@@ -113,7 +113,7 @@ def main():
     window.source_edit.returnPressed.emit()
     window.course_combo.setCurrentText("通信原理")
     window.category_combo.setCurrentText("课件")
-    assert str(root / "2026秋季学期" / "通信原理" / "课件") in window.destination_label.text()
+    assert window.target_directory() == root / "2026秋季学期" / "通信原理" / "课件"
     assert window.copy_button.isEnabled()
     window.tabs.setCurrentIndex(2)
     app.processEvents()

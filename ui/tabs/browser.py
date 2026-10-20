@@ -11,7 +11,7 @@ from PySide6.QtGui import QShortcut
 from PySide6.QtWidgets import QMenu, QFileIconProvider
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-    QInputDialog, QSizePolicy, QSplitter, QTableWidget, QTableWidgetItem, QDateEdit, QStyle,
+    QInputDialog, QMessageBox, QSizePolicy, QSplitter, QTableWidget, QTableWidgetItem, QDateEdit, QStyle,
     QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -171,7 +171,7 @@ class BrowserMixin:
         return card
 
     def focus_search(self):
-        self.tabs.setCurrentIndex(4)
+        self.tabs.setCurrentIndex(3)
         self.search_edit.setFocus()
 
     def refresh_browser(self, *_args, preferred=None, remember=True):
@@ -210,7 +210,6 @@ class BrowserMixin:
         self.refresh_targets()
         self.refresh_filter_choices()
         self.start_index_scan()
-        self.refresh_history()
 
     def start_index_scan(self):
         root = self.root_path()
@@ -480,7 +479,6 @@ class BrowserMixin:
         if current is not None:
             self.reset_search_controls()
             self.show_files(Path(current.data(0, Qt.ItemDataRole.UserRole)))
-            self.refresh_manage_categories()
 
     def show_files(self, directory, *, remember=True):
         from services.browser import read_directory
@@ -606,7 +604,7 @@ class BrowserMixin:
     def change_selected_file(self, kind):
         from tasks import FileActionWorker
         path = self.selected_file_path()
-        if path is None or any(worker and worker.isRunning() for worker in (self.file_worker, self.undo_worker, self.file_action_worker)):
+        if path is None or any(worker and worker.isRunning() for worker in (self.file_worker, self.file_action_worker)):
             return
         name = None
         if kind == "rename":
@@ -620,4 +618,43 @@ class BrowserMixin:
         self.file_action_worker.failed.connect(self.statusBar().showMessage)
         self.file_action_worker.finished.connect(self.request_refresh)
         self.file_action_worker.start()
+
+
+    def refresh_missing(self):
+        from catalog import missing_paths
+        root = self.root_path()
+        self.missing_combo.clear()
+        self.missing_tools.hide()
+        if root is None:
+            return
+        try:
+            from catalog import current_catalog
+            data = current_catalog(root)
+            if data.get("_read_only"):
+                self.missing_label.setText(data["_warning"])
+                return
+            missing = missing_paths(root)
+        except (OSError, ValueError) as exc:
+            self.missing_label.setText("管理记录不可读取；仍可浏览磁盘文件：" + str(exc))
+            return
+        for path in missing:
+            self.missing_combo.addItem(str(path), str(path))
+        self.missing_tools.setVisible(bool(missing))
+        self.missing_label.setText(f"已在磁盘上缺失 {len(missing)} 个受管目录；不会自动复原。" if missing else "")
+
+    def restore_missing_ui(self):
+        from catalog import restore_missing
+        raw = self.missing_combo.currentData()
+        if not raw:
+            return
+        root = self.root_path()
+        path = Path(raw)
+        try:
+            ancestors = [p for p in reversed(path.parents) if p != root and p.is_relative_to(root) and not p.is_dir()]
+            preview = "\n".join(str(p) for p in [*ancestors, path])
+            if QMessageBox.question(self, "重建空目录", "只重建文件夹，不恢复其中丢失的文件：\n" + preview, defaultButton=QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
+                restore_missing(root, path)
+                self.refresh_browser()
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "重建失败", str(exc))
 

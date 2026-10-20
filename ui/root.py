@@ -24,7 +24,7 @@ class RootMixin:
         return path if path is not None and local_path(path) and not path.is_symlink() and not path.is_junction() and path.is_dir() else None
 
     def choose_root(self):
-        if any(worker and worker.isRunning() for worker in (self.file_worker, self.undo_worker, self.file_action_worker)):
+        if any(worker and worker.isRunning() for worker in (self.file_worker, self.file_action_worker)):
             self.statusBar().showMessage("请等待归档结束或先取消批次")
             return
         initial = self.root_edit.text() if self.root_path() else str(Path.home())
@@ -36,7 +36,7 @@ class RootMixin:
     def root_changed(self, *, save: bool = True, preferred: str | None = None):
         if getattr(self, "_resolving_root", False):
             return
-        if any(worker and worker.isRunning() for worker in (self.file_worker, self.undo_worker, self.file_action_worker)):
+        if any(worker and worker.isRunning() for worker in (self.file_worker, self.file_action_worker)):
             if getattr(self, "_accepted_root", None):
                 self.root_edit.setText(str(self._accepted_root))
             self.statusBar().showMessage("请等待当前操作完成")
@@ -72,7 +72,7 @@ class RootMixin:
                     box.exec()
                     if box.clickedButton() == browse:
                         preferred, root = str(root), ancestor
-                        self.tabs.setCurrentIndex(4)
+                        self.tabs.setCurrentIndex(3)
                     elif box.clickedButton() != independent:
                         previous = getattr(self, "_accepted_root", None)
                         self.root_edit.setText(str(previous) if previous else "")
@@ -115,9 +115,9 @@ class RootMixin:
         if self.scan_worker and self.scan_worker.isRunning():
             self.scan_worker.request_cancel()
             self.scan_worker.wait(1000)
-        business = [worker for worker in (self.worker, self.file_worker, self.undo_worker, self.file_action_worker)
+        business = [worker for worker in (self.worker, self.file_worker, self.file_action_worker)
                     if worker is not None and worker.isRunning()]
-        workers = [worker for worker in (self.worker, self.file_worker, self.scan_worker, self.undo_worker, self.file_action_worker, prewarm,
+        workers = [worker for worker in (self.worker, self.file_worker, self.scan_worker, self.file_action_worker, prewarm,
                                          *getattr(self, "_directory_workers", []))
                    if worker is not None and worker.isRunning()]
         if workers:

@@ -4,23 +4,21 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QItemSelectionModel
+from PySide6.QtCore import QItemSelectionModel
 from PySide6.QtWidgets import (
     QAbstractItemView, QFileDialog,
-    QCheckBox, QFrame, QHBoxLayout, QHeaderView, QLabel, QProgressBar, QMenu,
+    QFrame, QHBoxLayout, QHeaderView, QLabel, QProgressBar, QMenu,
     QSizePolicy, QTableWidgetItem,
     QRadioButton, QVBoxLayout, QWidget,
 )
 
-from organizer import planned_copy_path
 from catalog import (disk_categories)
-from classifier import suggest
 from runtime import (open_with_shell)
 from inbox import build_inbox
 from tasks import BatchWorker
 
 
-from ui.widgets import DropFileEdit, Disclosure, InboxTable, SoftComboBox as QComboBox
+from ui.widgets import DropFileEdit, StatusLabel, InboxTable, SoftComboBox as QComboBox
 
 class ArchiveMixin:
     def _make_archive_tab(self) -> QWidget:
@@ -51,7 +49,7 @@ class ArchiveMixin:
         card_layout.addWidget(self.source_edit)
         self.inbox_table = InboxTable()
         self.inbox_table.file_dropped.connect(self.add_to_inbox)
-        self.inbox_table.setHorizontalHeaderLabels(["文件", "大小", "课程", "分类", "匹配理由", "方式", "状态"])
+        self.inbox_table.setHorizontalHeaderLabels(["文件", "大小", "课程", "分类", "方式", "状态"])
         self.inbox_table.setMinimumHeight(165)
         self.inbox_table.setWordWrap(False)
         self.inbox_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -63,25 +61,13 @@ class ArchiveMixin:
         self.inbox_table.currentCellChanged.connect(self.select_inbox_row)
         self.inbox_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.inbox_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for column, width in enumerate((180, 65, 210, 105, 150, 80, 170)):
+        for column, width in enumerate((180, 65, 210, 105, 80, 170)):
             if column:
                 self.inbox_table.setColumnWidth(column, width)
-        self.inbox_table.setColumnHidden(4, True)
         card_layout.addWidget(self.inbox_table, 1)
         inbox_layout = card_layout
         layout.addWidget(card, 1)
 
-        details = QFrame()
-        details.setObjectName("detailPanel")
-        card_layout = QVBoxLayout(details)
-        card_layout.setContentsMargins(18, 14, 18, 14)
-        card_layout.setSpacing(10)
-        self.source_label = QLabel("尚未选择文件")
-        self.source_label.setObjectName("pathText")
-        self.source_label.setWordWrap(True)
-        self.source_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.source_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        card_layout.addWidget(self.source_label)
         targets = QWidget()
         row = QHBoxLayout(targets)
         row.setContentsMargins(0, 0, 0, 0)
@@ -102,40 +88,10 @@ class ArchiveMixin:
         row.addWidget(self.apply_scope)
         row.addWidget(self._button("设置目标", self.apply_batch_target))
         inbox_layout.insertWidget(2, targets)
-        self.suggestion_label = QLabel("选择文件后显示匹配理由。")
-        self.suggestion_label.setWordWrap(True)
-        card_layout.addWidget(self.suggestion_label)
-        self.archive_choice_status = QLabel("请先选择资料库并创建课程目录。")
+        self.archive_choice_status = StatusLabel()
         self.archive_choice_status.setWordWrap(True)
         self.archive_choice_status.setObjectName("muted")
-        card_layout.addWidget(self.archive_choice_status)
-        self.destination_label = QLabel("尚未选择目标位置")
-        self.destination_label.setObjectName("destination")
-        self.destination_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.destination_label.setWordWrap(True)
-        self.destination_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        card_layout.addWidget(self.destination_label)
-        row = QHBoxLayout()
-        self.conflict_combo = QComboBox()
-        self.conflict_combo.addItem("同名：保留两个（默认）", "keep")
-        self.conflict_combo.addItem("同名：跳过", "skip")
-        row.addWidget(self.conflict_combo)
-        self.recursive_check = QCheckBox("包含子文件夹")
-        row.addWidget(self.recursive_check)
-        self.show_reason = QCheckBox("显示匹配理由列")
-        self.show_reason.toggled.connect(lambda visible: self.inbox_table.setColumnHidden(4, not visible))
-        row.addWidget(self.show_reason)
-        row.addStretch()
-        card_layout.addLayout(row)
-        alias = self._button("把本次选择记为别名…", self.remember_alias_ui)
-        alias.setObjectName("quiet")
-        card_layout.addWidget(alias, alignment=Qt.AlignmentFlag.AlignLeft)
-        self.archive_details = Disclosure("选中项详情与进阶选项", details)
-        layout.addWidget(self.archive_details)
-        # Keep the disclosure control reachable while its content scrolls.
-        outer.addWidget(self.archive_details.toggle)
-        self.archive_details.toggle.toggled.connect(
-            lambda expanded: QTimer.singleShot(0, lambda: scroll.ensureWidgetVisible(details, 0, 12)) if expanded else None)
+        inbox_layout.addWidget(self.archive_choice_status)
 
         footer = QFrame()
         footer.setObjectName("actionBar")
@@ -252,7 +208,6 @@ class ArchiveMixin:
             self.category_combo.setCurrentIndex(index)
         self.category_combo.blockSignals(False)
         self.update_destination()
-        self.refresh_manage_categories()
 
     def target_directory(self) -> Path | None:
         root = self.root_path()
@@ -267,19 +222,9 @@ class ArchiveMixin:
         return None
 
     def update_destination(self, *_):
-        source_text = self.source_edit.text().strip()
-        self.source_label.setText("来源文件：" + source_text if source_text else "来源文件：尚未选择")
         if not self._loading_inbox and len(self.selected_inbox_rows()) <= 1:
             self.sync_selected_inbox()
         self.update_archive_actions()
-        destination_dir = self.target_directory()
-        if destination_dir is None:
-            self.destination_label.setText("最终目标文件：请先选择资料目录并生成课程分类")
-        elif not source_text:
-            self.destination_label.setText("目标文件夹：" + str(destination_dir) + "\n请选择来源文件以预览最终文件名。")
-        else:
-            proposed = planned_copy_path(Path(source_text), destination_dir)
-            self.destination_label.setText("最终目标文件：" + str(proposed))
 
     def course_snapshot(self):
         root = self.root_path()
@@ -318,7 +263,7 @@ class ArchiveMixin:
         try:
             snapshot = self.course_snapshot()
             from catalog import aliases_for
-            added = build_inbox(paths, list(snapshot), snapshot, recursive=self.recursive_check.isChecked(),
+            added = build_inbox(paths, list(snapshot), snapshot, recursive=False,
                                 aliases=aliases_for(self.root_path()) if self.root_path() else {})
             if target:
                 relative = Path(target).relative_to(self.root_path())
@@ -351,12 +296,12 @@ class ArchiveMixin:
         self.inbox_table.setRowCount(len(self.inbox_items))
         self.retry_button.setVisible(any(item.status == "failed" for item in self.inbox_items))
         for row, item in enumerate(self.inbox_items):
-            for column in (2, 3, 5):
+            for column in (2, 3, 4):
                 old = self.inbox_table.cellWidget(row, column)
                 if old:
                     old.hide()
             self.inbox_table.setItem(row, 0, QTableWidgetItem(item.source.name))
-            self.inbox_table.item(row, 0).setToolTip(str(item.source))
+            self.inbox_table.item(row, 0).setToolTip(str(item.source) + ("\n" + item.reason if item.reason else ""))
             self.inbox_table.setItem(row, 1, QTableWidgetItem(str(item.size)))
             course = QComboBox()
             course.addItem("需手选", None)
@@ -374,14 +319,12 @@ class ArchiveMixin:
             category.setToolTip(category.currentText())
             category.currentIndexChanged.connect(lambda _, r=row: self.row_category_changed(r))
             self.inbox_table.setCellWidget(row, 3, category)
-            self.inbox_table.setItem(row, 4, QTableWidgetItem(item.reason))
-            self.inbox_table.item(row, 4).setToolTip(item.reason)
             mode = QComboBox()
             mode.addItem("复制", "copy")
             mode.addItem("移动", "move")
             mode.setCurrentIndex(mode.findData(item.mode))
             mode.currentIndexChanged.connect(lambda _, r=row: self.row_mode_changed(r))
-            self.inbox_table.setCellWidget(row, 5, mode)
+            self.inbox_table.setCellWidget(row, 4, mode)
             for widget in (course, category, mode):
                 widget.setEnabled(item.status != "ok")
             self.update_inbox_result(row)
@@ -410,7 +353,7 @@ class ArchiveMixin:
         self.update_archive_actions()
 
     def row_mode_changed(self, row):
-        self.inbox_items[row].mode = self.inbox_table.cellWidget(row, 5).currentData()
+        self.inbox_items[row].mode = self.inbox_table.cellWidget(row, 4).currentData()
         self.update_archive_actions()
 
     def select_inbox_row(self, row, *_):
@@ -430,7 +373,6 @@ class ArchiveMixin:
             self.category_combo.setCurrentText(item.category)
         else:
             self.category_combo.setCurrentIndex(-1)
-        self.suggestion_label.setText("文件名建议：" + item.reason)
         self._loading_inbox = False
         self.update_destination()
 
@@ -504,8 +446,8 @@ class ArchiveMixin:
             state = "需选目标"
         cell = QTableWidgetItem(state)
         cell.setToolTip(item.error or item.target or state)
-        self.inbox_table.setItem(row, 6, cell)
-        for column in (2, 3, 5):
+        self.inbox_table.setItem(row, 5, cell)
+        for column in (2, 3, 4):
             widget = self.inbox_table.cellWidget(row, column)
             if widget:
                 widget.setEnabled(item.status != "ok")
@@ -544,8 +486,8 @@ class ArchiveMixin:
 
     def archive_file(self, *, indices=None):
         try:
-            if any(worker and worker.isRunning() for worker in (self.undo_worker, self.file_action_worker)):
-                self.archive_status.setText("请先等待撤销结束")
+            if any(worker and worker.isRunning() for worker in (self.file_action_worker,)):
+                self.archive_status.setText("请先等待当前操作完成")
                 return
             if self.file_worker is not None and self.file_worker.isRunning():
                 return
@@ -559,14 +501,14 @@ class ArchiveMixin:
                 return
             self.copy_button.setEnabled(False)
             for widget in (self.source_edit, self.root_edit, self.archive_semester_combo, self.course_combo,
-                           self.category_combo, self.move_radio, self.copy_radio, self.conflict_combo):
+                           self.category_combo, self.move_radio, self.copy_radio):
                 widget.setEnabled(False)
             self.inbox_table.setEnabled(False)
             self.apply_scope.setEnabled(False)
             self.execute_scope.setEnabled(False)
             self.cancel_file_button.setEnabled(True)
             self.file_progress.setVisible(True)
-            self.file_worker = BatchWorker(self.inbox_items, root, conflict=self.conflict_combo.currentData(), indices=indices)
+            self.file_worker = BatchWorker(self.inbox_items, root, conflict="keep", indices=indices)
             self.file_worker.progress.connect(self.file_progress.setValue)
             self.file_worker.item_done.connect(self.batch_item_done)
             self.file_worker.completed.connect(self.batch_finished)
@@ -601,7 +543,7 @@ class ArchiveMixin:
 
     def file_stopped(self):
         for widget in (self.source_edit, self.root_edit, self.archive_semester_combo, self.course_combo,
-                       self.category_combo, self.move_radio, self.copy_radio, self.conflict_combo):
+                       self.category_combo, self.move_radio, self.copy_radio):
             widget.setEnabled(True)
         self.inbox_table.setEnabled(True)
         self.apply_scope.setEnabled(True)
@@ -613,35 +555,6 @@ class ArchiveMixin:
     def cancel_file(self):
         if self.file_worker is not None:
             self.file_worker.request_cancel()
-
-    def suggest_target(self, *_):
-        if self._suggesting:
-            return
-        source = Path(self.source_edit.text().strip())
-        if not source.is_file():
-            self.suggestion_label.setText("文件名建议：请选择存在的普通文件。")
-            self.update_destination()
-            return
-        self._suggesting = True
-        try:
-            courses = [self.course_combo.itemText(i) for i in range(self.course_combo.count()) if self.course_combo.itemData(i)]
-            from catalog import aliases_for
-            semester = self.archive_semester_combo.currentText()
-            aliases = {Path(key).name: value for key, value in aliases_for(self.root_path()).items()
-                       if Path(key).parts[0] == semester} if self.root_path() else {}
-            result = suggest(source.name, courses, aliases=aliases)
-            if result.course and result.confidence == "high":
-                self.course_combo.setCurrentText(result.course)
-            else:
-                self.course_combo.setCurrentIndex(-1)
-            categories = [self.category_combo.itemText(i) for i in range(self.category_combo.count())]
-            result = suggest(source.name, courses, categories, aliases=aliases)
-            if result.category:
-                self.category_combo.setCurrentText(result.category)
-            self.suggestion_label.setText("文件名建议：" + result.reason + "。可手动修改目标。")
-        finally:
-            self._suggesting = False
-            self.update_destination()
 
     def file_dropped_on_tree(self, sources, raw_target):
         root = self.root_path()

@@ -1,6 +1,6 @@
 from PySide6.QtCore import Qt, Signal, QPointF, QSize
 from PySide6.QtGui import QPainter, QPen, QPalette, QPolygonF
-from PySide6.QtWidgets import QLineEdit, QLabel, QTreeWidget, QToolButton, QVBoxLayout, QWidget, QTableWidget, QComboBox, QStyledItemDelegate
+from PySide6.QtWidgets import QLineEdit, QLabel, QTreeWidget, QTableWidget, QComboBox, QStyledItemDelegate
 
 
 class StatusLabel(QLabel):
@@ -49,35 +49,11 @@ class SoftComboBox(QComboBox):
         painter.drawPolyline(QPolygonF([QPointF(x - 3, y - 1), QPointF(x, y + 2), QPointF(x + 3, y - 1)]))
 
 
-class Disclosure(QWidget):
-    """Keep secondary controls available without filling the initial screen."""
-    def __init__(self, title, content, expanded=False):
-        super().__init__()
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-        self.toggle = QToolButton()
-        self.toggle.setObjectName("disclosure")
-        self.toggle.setText(title)
-        self.toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.toggle.setCheckable(True)
-        self.toggle.setChecked(expanded)
-        self.content = content
-        self.toggle.toggled.connect(self.set_expanded)
-        layout.addWidget(self.toggle)
-        layout.addWidget(content)
-        self.set_expanded(expanded)
-
-    def set_expanded(self, expanded):
-        self.toggle.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
-        self.content.setVisible(expanded)
-
-
 class InboxTable(QTableWidget):
     file_dropped = Signal(list)
 
     def __init__(self):
-        super().__init__(0, 7)
+        super().__init__(0, 6)
         self.setAcceptDrops(True)
         self._compact = None
         self.empty = QLabel("暂无文件", self.viewport())
@@ -98,7 +74,7 @@ class InboxTable(QTableWidget):
             self._compact = compact
             self.setColumnHidden(1, compact)
             for column, width in ((2, 165 if compact else 210), (3, 90 if compact else 105),
-                                  (5, 80), (6, 135 if compact else 170)):
+                                  (4, 80), (5, 135 if compact else 170)):
                 self.setColumnWidth(column, width)
 
     def dragEnterEvent(self, event):
