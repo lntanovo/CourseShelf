@@ -1,0 +1,53 @@
+name: Publish verified Windows artifact
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag
+        required: true
+        type: string
+      run_id:
+        description: Successful Windows acceptance run for that tag commit
+        required: true
+        type: string
+permissions:
+  actions: read
+  contents: write
+jobs:
+  publish:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      RUN_ID: ${{ inputs.run_id }}
+    steps:
+      - name: Verify source, download tested artifact and publish
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$' -or $env:RUN_ID -notmatch '^\d+$') { throw 'Invalid release inputs' }
+          $run = gh run view $env:RUN_ID --json headSha,conclusion,workflowName | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $run.conclusion -ne 'success' -or $run.workflowName -ne 'Windows offline acceptance') { throw 'Acceptance has not succeeded' }
+          $commit = gh api "repos/$env:GH_REPO/commits/$env:RELEASE_TAG" --jq .sha
+          if ($LASTEXITCODE -ne 0 -or $commit -ne $run.headSha) { throw 'Artifact source differs from release tag' }
+          $release = gh api "repos/$env:GH_REPO/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or -not $release.draft) { throw 'Prepare a draft release first; published assets are never replaced' }
+          gh run download $env:RUN_ID --name CourseShelf-Windows --dir dist-release
+          if ($LASTEXITCODE -ne 0) { throw 'Artifact download failed' }
+          $name = "CourseShelf-$($env:RELEASE_TAG.Substring(1))-Windows.zip"
+          $files = @(Get-ChildItem -LiteralPath dist-release -Filter $name -File -Recurse)
+          if ($files.Count -ne 1) { throw 'Expected exactly one versioned archive' }
+          $archive = $files[0]
+          $hash = (Get-FileHash -LiteralPath $archive.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          $checksum = $archive.FullName + '.sha256'
+          "$hash  $name" | Set-Content -LiteralPath $checksum -Encoding ascii
+          gh release upload $env:RELEASE_TAG $archive.FullName $checksum --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Release upload failed' }
+          $assets = gh api "repos/$env:GH_REPO/releases/$($release.id)/assets" | ConvertFrom-Json
+          $asset = @($assets | Where-Object name -eq $name)
+          if ($LASTEXITCODE -ne 0 -or $asset.Count -ne 1 -or $asset[0].state -ne 'uploaded' -or $asset[0].size -ne $archive.Length -or $asset[0].digest -ne "sha256:$hash") { throw 'Remote asset verification failed' }
+          gh release edit $env:RELEASE_TAG --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Release publication failed' }
+          "Published $env:RELEASE_TAG from $($run.headSha); $($archive.Length) bytes; SHA-256 $hash" | Add-Content $env:GITHUB_STEP_SUMMARY
