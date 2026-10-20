@@ -4,6 +4,8 @@ Windows 10/11 便携桌面工具。课表识别、文件名建议、归档、搜
 
 源码与构建脚本：[lntanovo/CourseShelf](https://github.com/lntanovo/CourseShelf)。
 
+[1.2 技术文档与版本对比](TECHNICAL_DOCUMENTATION.md) · [界面更新与验收](UI_REFRESH.md)
+
 ## 启动与资料位置
 
 完整解压 `dist/CourseShelf-1.2.0-Windows.zip`，双击 `CourseShelf/CourseShelf.exe`。保留 `_internal`、本地模型和许可文件；整个发布文件夹可以搬移，不需要安装 Python。本版未签名，Windows 可能显示 SmartScreen 提示。

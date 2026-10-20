@@ -57,3 +57,5 @@ ui-refresh verified
 zip SHA-256：`e36c9d3bae3ad0d1de9924c757ba3f397ecdf563d8acca60807fe72ea78b03cf`。
 
 上一轮 GitHub CI 在 Windows 的 `RUNNER~1` 短路径与 `runneradmin` 长路径混用时失败；本轮将临时测试根目录统一为 `Path.resolve()`，与界面既有的路径规范化一致，保留原安全断言。本轮提交前仍以本机验收为证，不把尚未完成的远端流水线报告为成功。
+
+后续核验（2026-10-20）：`0d69379` 的 [main 推送 CI](https://github.com/lntanovo/CourseShelf/actions/runs/39290755586) 与 [v1.2.0 标签 CI](https://github.com/lntanovo/CourseShelf/actions/runs/39291251867) 均已完成且结果为 success。原文中的“提交前”描述保留为当时的证据状态。当前完整技术说明见 [TECHNICAL_DOCUMENTATION.md](TECHNICAL_DOCUMENTATION.md)。
