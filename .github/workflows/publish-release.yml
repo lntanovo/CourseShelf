@@ -32,8 +32,10 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $run.conclusion -ne 'success' -or $run.workflowName -ne 'Windows offline acceptance') { throw 'Acceptance has not succeeded' }
           $commit = gh api "repos/$env:GH_REPO/commits/$env:RELEASE_TAG" --jq .sha
           if ($LASTEXITCODE -ne 0 -or $commit -ne $run.headSha) { throw 'Artifact source differs from release tag' }
-          $release = gh api "repos/$env:GH_REPO/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0 -or -not $release.draft) { throw 'Prepare a draft release first; published assets are never replaced' }
+          $releases = gh api "repos/$env:GH_REPO/releases?per_page=100" | ConvertFrom-Json
+          $drafts = @($releases | Where-Object { $_.tag_name -eq $env:RELEASE_TAG -and $_.draft })
+          if ($LASTEXITCODE -ne 0 -or $drafts.Count -ne 1) { throw 'Prepare exactly one draft release first; published assets are never replaced' }
+          $release = $drafts[0]
           gh run download $env:RUN_ID --name CourseShelf-Windows --dir dist-release
           if ($LASTEXITCODE -ne 0) { throw 'Artifact download failed' }
           $name = "CourseShelf-$($env:RELEASE_TAG.Substring(1))-Windows.zip"
