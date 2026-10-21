@@ -18,6 +18,7 @@ from .tabs.ocr import OcrMixin
 from .tabs.generate import GenerateMixin
 from .tabs.archive import ArchiveMixin
 from .tabs.browser import BrowserMixin
+from .tabs.history import HistoryMixin
 from .widgets import StatusLabel
 
 PAGES = {
@@ -25,10 +26,11 @@ PAGES = {
     1: "生成目录",
     2: "整理资料",
     3: "资料库",
+    4: "操作记录",
 }
 
 
-class MainWindow(AppearanceMixin, RootMixin, OcrMixin, GenerateMixin, ArchiveMixin, BrowserMixin, QMainWindow):
+class MainWindow(AppearanceMixin, RootMixin, OcrMixin, GenerateMixin, ArchiveMixin, BrowserMixin, HistoryMixin, QMainWindow):
     def __init__(self):
         super().__init__()
         from runtime import initialize_gui
@@ -74,6 +76,7 @@ class MainWindow(AppearanceMixin, RootMixin, OcrMixin, GenerateMixin, ArchiveMix
         self.tabs.addTab(self._make_generate_tab(), "生成目录")
         self.tabs.addTab(self._make_archive_tab(), "整理资料")
         self.tabs.addTab(self._make_browser(), "资料库")
+        self.tabs.addTab(self._make_history_tab(), "操作记录")
         self.tabs.tabBar().hide()
         self.tabs.currentChanged.connect(self._page_changed)
         workspace.addWidget(self.tabs, 1)
@@ -113,12 +116,15 @@ class MainWindow(AppearanceMixin, RootMixin, OcrMixin, GenerateMixin, ArchiveMix
         for index, icon in ((2, QStyle.StandardPixmap.SP_FileDialogDetailedView),
                             (3, QStyle.StandardPixmap.SP_DirIcon),
                             (0, QStyle.StandardPixmap.SP_FileDialogContentsView),
-                            (1, QStyle.StandardPixmap.SP_FileDialogNewFolder)):
+                            (1, QStyle.StandardPixmap.SP_FileDialogNewFolder),
+                            (4, QStyle.StandardPixmap.SP_FileDialogInfoView)):
             if index == 0:
                 layout.addSpacing(20)
                 label = QLabel("新学期")
                 label.setObjectName("eyebrow")
                 layout.addWidget(label)
+            if index == 4:
+                layout.addSpacing(20)
             button = QPushButton(PAGES[index])
             button.setObjectName("nav")
             button.setIcon(self.style().standardIcon(icon))
@@ -136,6 +142,8 @@ class MainWindow(AppearanceMixin, RootMixin, OcrMixin, GenerateMixin, ArchiveMix
     def _page_changed(self, index):
         self.page_heading.setText(PAGES[index])
         self.nav_buttons[index].setChecked(True)
+        if index == 4:
+            self.refresh_history()
 
     @staticmethod
     def _button(text: str, callback, primary: bool = False) -> QPushButton:

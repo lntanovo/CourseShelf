@@ -53,6 +53,7 @@ class RootMixin:
             self.refresh_targets()
             self.missing_label.setText("资料总目录失效；请重新选择。不会自动创建目录。")
             self.missing_combo.clear()
+            self.refresh_history()
             return
         root = root.resolve()
         if save:

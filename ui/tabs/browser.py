@@ -210,6 +210,8 @@ class BrowserMixin:
         self.refresh_targets()
         self.refresh_filter_choices()
         self.start_index_scan()
+        if self.tabs.currentIndex() == 4:
+            self.refresh_history()
 
     def start_index_scan(self):
         root = self.root_path()

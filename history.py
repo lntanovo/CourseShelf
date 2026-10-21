@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from services.history import record as record
     from services.history import update as update
     from services.history import operations as operations
+    from services.history import read_operations as read_operations
     from services.history import owned_record as owned_record
     from services.history import manage_file as manage_file
     from services.history import undo as undo

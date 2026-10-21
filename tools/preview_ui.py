@@ -104,6 +104,18 @@ def main():
         window.resize(1040, 720)
         settle()
         assert window.grab().save(str(output / "folder-preview-compact.png"))
+        from history import record
+        record(root, "copy", src=sources[0], dst=root / "2026 秋季/设计基础/课件/设计基础-课件.pdf")
+        record(root, "copy", src=sources[1], result="failed", error="示例：目标文件夹不可写")
+        window.tabs.setCurrentIndex(4)
+        settle()
+        assert window.grab().save(str(output / "activity-compact.png"))
+        window.resize(1360, 880)
+        settle()
+        assert window.grab().save(str(output / "activity.png"))
+        window.apply_appearance(dict(theme="ink", background="", visibility=35), persist=False)
+        settle()
+        assert window.grab().save(str(output / "activity-ink.png"))
         if window.scan_worker.isRunning():
             wait_worker(window.scan_worker)
         window.close()

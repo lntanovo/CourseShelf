@@ -64,6 +64,22 @@ def operations(root, batch_id="", limit=500):
                                                         (library, library, batch_id, batch_id, limit))]
 
 
+def read_operations(root, limit=500):
+    """Display existing records without creating, migrating or repairing the database."""
+    path = history_path()
+    if path.is_symlink() or path.is_junction():
+        raise ValueError("操作记录文件不能是链接")
+    if not path.exists():
+        return []
+    with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)) as connection:
+        connection.row_factory = sqlite3.Row
+        if connection.execute("PRAGMA user_version").fetchone()[0] != 1:
+            raise ValueError("操作记录版本不支持，已保留原文件")
+        return [dict(row) for row in connection.execute(
+            "SELECT * FROM operation WHERE library=? ORDER BY ts DESC, id DESC LIMIT ?",
+            (str(Path(root).resolve()), max(1, min(int(limit), 500))))]
+
+
 def owned_record(root, path):
     with closing(connect_history()) as connection:
         row = connection.execute("""SELECT * FROM operation WHERE library=? AND dst=?

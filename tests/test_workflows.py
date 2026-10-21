@@ -89,15 +89,15 @@ class WorkflowTests(unittest.TestCase):
         metadata = (self.root / ".courseshelf.json").read_bytes()
         record_ids = [record["id"] for record in operations(self.root)]
         window = self.window()
-        self.assertEqual(window.tabs.count(), 4)
-        for index, title in enumerate(("课表与课程", "生成目录", "整理资料", "资料库")):
+        self.assertEqual(window.tabs.count(), 5)
+        for index, title in enumerate(("课表与课程", "生成目录", "整理资料", "资料库", "操作记录")):
             window.nav_buttons[index].click()
             self.assertEqual(window.tabs.currentIndex(), index)
             self.assertEqual(window.page_heading.text(), title)
         texts = [button.text() for button in window.findChildren(QAbstractButton)]
         texts += [box.title() for box in window.findChildren(QGroupBox)]
         texts += [window.tabs.tabText(index) for index in range(window.tabs.count())]
-        for removed in ("操作记录", "撤销选中操作", "选中项详情与进阶选项", "管理分类与课程别名",
+        for removed in ("撤销选中操作", "选中项详情与进阶选项", "管理分类与课程别名",
                         "纳入管理", "编辑课程别名", "把本次选择记为别名…"):
             self.assertNotIn(removed, texts)
         self.assertEqual(window.inbox_table.columnCount(), 6)
